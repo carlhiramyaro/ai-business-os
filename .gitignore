@@ -1,0 +1,10 @@
+# OS / editor
+.DS_Store
+
+# Secrets (any app in the monorepo)
+.env
+.env.*
+!.env.example
+
+# Local docs (not for GitHub)
+docs/

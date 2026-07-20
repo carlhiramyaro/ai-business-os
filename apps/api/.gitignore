@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+myenv/
+.pytest_cache/
+dump.rdb
