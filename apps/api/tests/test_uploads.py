@@ -123,8 +123,8 @@ CLEAN_SALES_CSV = (
     b"2026-01-01,Rice,Grocery,10,2.5,0,25.0,John Doe,Cash\n"
 )
 CLEAN_INVENTORY_CSV = (
-    b"Product,SKU,Category,Quantity,Reorder Level,Supplier,Cost Price,Selling Price\n"
-    b"Rice,SKU001,Grocery,100,20,Acme Supplies,2.0,2.5\n"
+    b"Product,Category,Quantity,Reorder Level,Supplier,Cost Price,Selling Price\n"
+    b"Rice,Grocery,100,20,Acme Supplies,2.0,2.5\n"
 )
 CLEAN_EXPENSES_CSV = b"Date,Category,Vendor,Amount,Description\n2026-01-02,Utilities,Power Co,150.0,Electricity bill\n"
 
@@ -168,7 +168,7 @@ def test_upload_with_clean_headers_completes_synchronously(real_client, business
     mappings = real_client.get(
         f"/api/v1/businesses/{business_id}/uploads/{upload_session_id}/column-mappings", headers=headers
     ).json()
-    assert len(mappings) == 9 + 8 + 5
+    assert len(mappings) == 9 + 7 + 5
     assert all(m["mappingMethod"] == "heuristic" and m["confidenceScore"] == 1.0 for m in mappings)
 
 

@@ -15,7 +15,7 @@ load_dotenv()
 HEURISTIC_ACCEPT_THRESHOLD = 0.75
 
 # Sentinel target field meaning "this source column has no useful home in
-# our schema" (e.g. an internal order ID, a redundant product code when we
+# our schema" (e.g. an internal order ID, a redundant item code when we
 # already capture product name). Lets the LLM fallback -- and the user, via
 # the review screen -- say "skip this" instead of being forced into the
 # closest-but-wrong canonical field. finalize_upload_task's
@@ -38,7 +38,6 @@ CANONICAL_FIELDS: dict[str, list[str]] = {
     ],
     "inventory": [
         "productName",
-        "sku",
         "category",
         "quantity",
         "reorderLevel",
@@ -59,7 +58,6 @@ ALIASES: dict[str, list[str]] = {
     "totalAmount": ["total amount", "amt", "amount", "total", "revenue"],
     "customerName": ["customer", "customer name", "client", "buyer"],
     "paymentMethod": ["payment method", "payment", "method", "payment type"],
-    "sku": ["sku", "product code", "item code"],
     "reorderLevel": ["reorder level", "reorder point", "min stock", "minimum stock"],
     "supplier": ["supplier", "vendor name"],
     "costPrice": ["cost price", "cost", "unit cost"],
@@ -107,8 +105,8 @@ def llm_match(header: str, dataset_type: str, sample_values: list[str]) -> tuple
                     f"Valid canonical fields for a '{dataset_type}' dataset: {', '.join(fields)}. "
                     f"If the column doesn't correspond to any of them -- e.g. an internal order/"
                     "transaction ID, or an identifier that duplicates a field we already capture "
-                    f"(like a SKU when we already have productName) -- respond with '{IGNORE_FIELD}' "
-                    "instead of forcing the closest-sounding field. "
+                    f"(like a duplicate 'Item Code' column when we already have productName) -- "
+                    f"respond with '{IGNORE_FIELD}' instead of forcing the closest-sounding field. "
                     'Respond with strict JSON: {"targetField": "<one of the valid fields or '
                     f'\'{IGNORE_FIELD}\'>", "confidence": <0.0-1.0>}}.'
                 ),

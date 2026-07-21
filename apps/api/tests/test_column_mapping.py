@@ -4,7 +4,7 @@ from app.column_mapping import heuristic_match, resolve_column_mapping
 def test_heuristic_match_exact_alias():
     assert heuristic_match("Total Amount", "sales") == ("totalAmount", 1.0)
     assert heuristic_match("Qty", "sales") == ("quantity", 1.0)
-    assert heuristic_match("SKU", "inventory") == ("sku", 1.0)
+    assert heuristic_match("Reorder Point", "inventory") == ("reorderLevel", 1.0)
     assert heuristic_match("Vendor", "expenses") == ("vendor", 1.0)
 
 

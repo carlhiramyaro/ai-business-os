@@ -35,7 +35,6 @@ RECORD_FIELD_MAP = {
     },
     "inventory": {
         "productName": "product_name",
-        "sku": "sku",
         "category": "category",
         "quantity": "quantity",
         "reorderLevel": "reorder_level",

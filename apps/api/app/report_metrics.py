@@ -38,7 +38,7 @@ def compute_inventory_metrics(inventory_items: list[dict]) -> dict:
     return {
         "lowStockItems": low_stock,
         "totalInventoryValue": round(total_inventory_value, 2),
-        "totalSkus": len(inventory_items),
+        "totalInventoryItems": len(inventory_items),
     }
 
 

@@ -36,7 +36,7 @@ def test_compute_inventory_metrics_flags_low_stock():
     result = compute_inventory_metrics(items)
     assert result["lowStockItems"] == [{"productName": "Rice", "quantity": 5, "reorderLevel": 10}]
     assert result["totalInventoryValue"] == 5 * 2.0 + 50 * 1.0
-    assert result["totalSkus"] == 2
+    assert result["totalInventoryItems"] == 2
 
 
 def test_compute_marketing_metrics_ranks_top_products():

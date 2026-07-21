@@ -184,7 +184,7 @@ export const CANONICAL_FIELDS: Record<string, string[]> = {
     "customerName",
     "paymentMethod",
   ],
-  inventory: ["productName", "sku", "category", "quantity", "reorderLevel", "supplier", "costPrice", "sellingPrice"],
+  inventory: ["productName", "category", "quantity", "reorderLevel", "supplier", "costPrice", "sellingPrice"],
   expenses: ["expenseDate", "category", "vendor", "amount", "description"],
 };
 

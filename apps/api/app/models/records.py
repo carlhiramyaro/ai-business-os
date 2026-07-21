@@ -31,7 +31,6 @@ class Inventory(Base):
     business_id = Column(UUID(as_uuid=True), ForeignKey("businesses.id"), nullable=False, index=True)
     upload_session_id = Column(UUID(as_uuid=True), ForeignKey("upload_sessions.id"), nullable=False, index=True)
     product_name = Column(String, nullable=True)
-    sku = Column(String, nullable=True)
     category = Column(String, nullable=True)
     quantity = Column(Integer, nullable=True)
     reorder_level = Column(Integer, nullable=True)
