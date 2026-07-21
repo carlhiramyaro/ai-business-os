@@ -12,14 +12,21 @@ class SendMessageRequest(CamelModel):
     message: str
 
 
+class ToolCallItem(CamelModel):
+    tool: str
+    arguments: dict
+
+
 class SendMessageResponse(CamelModel):
     answer: str
+    tool_calls: list[ToolCallItem] = []
 
 
 class MessageItem(CamelModel):
     id: uuid.UUID
     role: str
     content: str
+    tool_calls: list[ToolCallItem] | None = None
     created_at: datetime
 
 

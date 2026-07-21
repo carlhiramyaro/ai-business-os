@@ -4,7 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.routers import auth, business, chat, report, upload
+from app.routers import auth, business, chat, entities, report, upload
 
 app = FastAPI()
 
@@ -21,6 +21,7 @@ app.include_router(business.router)
 app.include_router(upload.router)
 app.include_router(report.router)
 app.include_router(chat.router)
+app.include_router(entities.router)
 
 
 @app.get("/")

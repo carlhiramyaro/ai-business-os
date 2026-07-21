@@ -182,6 +182,7 @@ export const CANONICAL_FIELDS: Record<string, string[]> = {
     "discount",
     "totalAmount",
     "customerName",
+    "customerPhone",
     "paymentMethod",
   ],
   inventory: ["productName", "category", "quantity", "reorderLevel", "supplier", "costPrice", "sellingPrice"],
@@ -261,6 +262,7 @@ export interface MessageItem {
   id: string;
   role: "user" | "assistant";
   content: string;
+  toolCalls: ChatToolCall[] | null;
   createdAt: string;
 }
 
@@ -276,12 +278,17 @@ export function createConversation(accessToken: string, businessId: string) {
   }).then((response) => parseJsonOrThrow<ConversationCreateResponse>(response));
 }
 
+export interface ChatToolCall {
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
 export function sendChatMessage(accessToken: string, businessId: string, conversationId: string, message: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/chat/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
     body: JSON.stringify({ message }),
-  }).then((response) => parseJsonOrThrow<{ answer: string }>(response));
+  }).then((response) => parseJsonOrThrow<{ answer: string; toolCalls: ChatToolCall[] }>(response));
 }
 
 export function getConversation(accessToken: string, businessId: string, conversationId: string) {

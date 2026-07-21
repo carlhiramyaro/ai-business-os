@@ -1,12 +1,12 @@
 import app.routers.chat as chat_router
+from app.chat_generation import ChatAnswer
 
 
-def fake_retrieve_relevant_chunks(db, business_id, query_text, top_k=5):
-    return ["The business had $500 in revenue last month.", "Inventory is low on Rice."]
-
-
-def fake_generate_chat_answer(question, context_chunks, history):
-    return f"Answer based on {len(context_chunks)} chunks and {len(history)} prior messages."
+def fake_generate_chat_answer(db, business, question, history):
+    return ChatAnswer(
+        answer=f"Answer based on {len(history)} prior messages.",
+        tool_calls=[{"tool": "get_financial_summary", "arguments": {}}],
+    )
 
 
 def register_and_login(client, email):
@@ -23,7 +23,6 @@ def auth_header(token):
 
 
 def _setup(monkeypatch, client, email):
-    monkeypatch.setattr(chat_router, "retrieve_relevant_chunks", fake_retrieve_relevant_chunks)
     monkeypatch.setattr(chat_router, "generate_chat_answer", fake_generate_chat_answer)
 
     token = register_and_login(client, email)
@@ -53,13 +52,17 @@ def test_send_message_returns_answer_and_stores_both_messages(monkeypatch, clien
         headers=auth_header(token),
     )
     assert response.status_code == 200
-    assert response.json()["answer"] == "Answer based on 2 chunks and 0 prior messages."
+    assert response.json()["answer"] == "Answer based on 0 prior messages."
+    assert response.json()["toolCalls"] == [{"tool": "get_financial_summary", "arguments": {}}]
 
     history = client.get(
         f"/api/v1/businesses/{business_id}/chat/{conversation_id}", headers=auth_header(token)
     ).json()
     assert [m["role"] for m in history["messages"]] == ["user", "assistant"]
     assert history["messages"][0]["content"] == "Why is profit decreasing?"
+    # the tool-call trail is persisted with the assistant message
+    assert history["messages"][0]["toolCalls"] is None
+    assert history["messages"][1]["toolCalls"] == [{"tool": "get_financial_summary", "arguments": {}}]
 
 
 def test_second_message_includes_prior_history(monkeypatch, client):
@@ -79,7 +82,7 @@ def test_second_message_includes_prior_history(monkeypatch, client):
         headers=auth_header(token),
     )
     # 2 prior messages (first question + its answer) by the time the second question is asked
-    assert second.json()["answer"] == "Answer based on 2 chunks and 2 prior messages."
+    assert second.json()["answer"] == "Answer based on 2 prior messages."
 
 
 def test_chat_forbidden_for_non_owner(monkeypatch, client):

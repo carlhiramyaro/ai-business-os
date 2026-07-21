@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.celery_app import celery_app
 from app.column_mapping import resolve_column_mapping
 from app.database import SessionLocal
+from app.entities import resolve_customer, resolve_supplier
 from app.models import Business, ColumnMapping, DatasetProfile, Expense, Inventory, Report, Sale, UploadSession
 from app.report_generation import generate_report, run_report_generation
 from app.storage import download_fileobj, key_for
@@ -31,6 +32,7 @@ RECORD_FIELD_MAP = {
         "discount": "discount",
         "totalAmount": "total_amount",
         "customerName": "customer_name",
+        "customerPhone": "customer_phone",
         "paymentMethod": "payment_method",
     },
     "inventory": {
@@ -185,6 +187,18 @@ def finalize_upload_task(upload_session_id: str):
 
                 if dataset_type == "sales":
                     record_kwargs["raw_row_number"] = row_number
+                    customer = resolve_customer(
+                        db,
+                        upload_session.business_id,
+                        record_kwargs.get("customer_name"),
+                        phone=record_kwargs.get("customer_phone"),
+                    )
+                    if customer is not None:
+                        record_kwargs["customer_id"] = customer.id
+                elif dataset_type == "inventory":
+                    supplier = resolve_supplier(db, upload_session.business_id, record_kwargs.get("supplier"))
+                    if supplier is not None:
+                        record_kwargs["supplier_id"] = supplier.id
 
                 db.add(model_cls(**record_kwargs))
 

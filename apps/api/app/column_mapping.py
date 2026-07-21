@@ -34,6 +34,7 @@ CANONICAL_FIELDS: dict[str, list[str]] = {
         "discount",
         "totalAmount",
         "customerName",
+        "customerPhone",
         "paymentMethod",
     ],
     "inventory": [
@@ -57,6 +58,7 @@ ALIASES: dict[str, list[str]] = {
     "discount": ["discount", "disc", "discount amount"],
     "totalAmount": ["total amount", "amt", "amount", "total", "revenue"],
     "customerName": ["customer", "customer name", "client", "buyer"],
+    "customerPhone": ["phone", "customer phone", "phone number", "mobile", "mobile number", "contact number", "telephone"],
     "paymentMethod": ["payment method", "payment", "method", "payment type"],
     "reorderLevel": ["reorder level", "reorder point", "min stock", "minimum stock"],
     "supplier": ["supplier", "vendor name"],

@@ -20,6 +20,10 @@ class Sale(Base):
     discount = Column(Numeric, nullable=True)
     total_amount = Column(Numeric, nullable=True)
     customer_name = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=True)
+    # Resolved from customer_name/customer_phone at ingestion; the raw
+    # string columns above are kept as the as-ingested values.
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True, index=True)
     payment_method = Column(String, nullable=True)
     raw_row_number = Column(Integer, nullable=False)
 
@@ -35,6 +39,7 @@ class Inventory(Base):
     quantity = Column(Integer, nullable=True)
     reorder_level = Column(Integer, nullable=True)
     supplier = Column(String, nullable=True)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True, index=True)
     cost_price = Column(Numeric, nullable=True)
     selling_price = Column(Numeric, nullable=True)
 

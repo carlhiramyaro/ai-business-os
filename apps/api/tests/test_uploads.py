@@ -13,6 +13,7 @@ from app.models import (
     AgentRun,
     Business,
     ColumnMapping,
+    Customer,
     DatasetProfile,
     Embedding,
     Expense,
@@ -20,6 +21,7 @@ from app.models import (
     Report,
     ReportSection,
     Sale,
+    Supplier,
     UploadSession,
     User,
 )
@@ -86,6 +88,8 @@ def _patch_storage_and_db(monkeypatch):
         db.query(Sale).delete()
         db.query(Inventory).delete()
         db.query(Expense).delete()
+        db.query(Customer).delete()
+        db.query(Supplier).delete()
         db.query(UploadSession).delete()
         db.query(Business).delete()
         db.query(User).delete()
@@ -161,6 +165,15 @@ def test_upload_with_clean_headers_completes_synchronously(real_client, business
         assert sale.product_name == "Rice"
         assert float(sale.total_amount) == 25.0
         assert sale.raw_row_number == 1
+
+        # ingestion resolved first-class entities and linked them
+        customer = db.query(Customer).filter(Customer.business_id == uuid.UUID(business_id)).one()
+        assert customer.name == "John Doe"
+        assert sale.customer_id == customer.id
+        supplier = db.query(Supplier).filter(Supplier.business_id == uuid.UUID(business_id)).one()
+        assert supplier.name == "Acme Supplies"
+        inventory_row = db.query(Inventory).filter(Inventory.upload_session_id == upload_session_id).first()
+        assert inventory_row.supplier_id == supplier.id
 
         profiles = db.query(DatasetProfile).filter(DatasetProfile.upload_session_id == upload_session_id).all()
         assert {p.dataset_type: p.total_rows for p in profiles} == {"sales": 1, "inventory": 1, "expenses": 1}

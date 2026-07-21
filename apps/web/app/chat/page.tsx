@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { createConversation, sendChatMessage } from "@/lib/api";
+import { createConversation, sendChatMessage, type ChatToolCall } from "@/lib/api";
 import { BusinessPicker } from "@/components/BusinessPicker";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -12,6 +12,22 @@ import { Input } from "@/components/ui/Input";
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  toolCalls?: ChatToolCall[];
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  get_financial_summary: "financial summary",
+  get_sales_trend: "sales trend",
+  get_top_products: "top products",
+  get_top_customers: "top customers",
+  get_inactive_customers: "inactive customers",
+  get_inventory_status: "inventory status",
+  search_business_context: "report context",
+};
+
+function describeToolCalls(toolCalls: ChatToolCall[]): string {
+  const labels = toolCalls.map((call) => TOOL_LABELS[call.tool] ?? call.tool);
+  return [...new Set(labels)].join(", ");
 }
 
 export default function ChatPage() {
@@ -55,7 +71,10 @@ export default function ChatPage() {
 
     try {
       const response = await sendChatMessage(accessToken, businessId, conversationId, question);
-      setMessages((prev) => [...prev, { role: "assistant", content: response.answer }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: response.answer, toolCalls: response.toolCalls },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Message failed");
     } finally {
@@ -112,6 +131,9 @@ export default function ChatPage() {
                 }`}
               >
                 {message.content}
+                {message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0 && (
+                  <p className="mt-1 text-xs text-muted">Checked: {describeToolCalls(message.toolCalls)}</p>
+                )}
               </div>
             ))}
             {sending && <p className="self-start text-sm text-muted">Thinking…</p>}

@@ -25,6 +25,9 @@ class Message(Base):
     conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, index=True)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
+    # [{"tool": ..., "arguments": {...}}] for assistant messages; NULL for
+    # user messages and assistant messages predating the v0.2 agent loop.
+    tool_calls = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

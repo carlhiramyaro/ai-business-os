@@ -5,13 +5,13 @@ from app.chat_generation import generate_chat_answer
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_conversation
 from app.models import Business, Conversation, Message
-from app.retrieval import retrieve_relevant_chunks
 from app.schemas.chat import (
     ConversationCreateResponse,
     ConversationHistory,
     MessageItem,
     SendMessageRequest,
     SendMessageResponse,
+    ToolCallItem,
 )
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/chat", tags=["chat"])
@@ -44,13 +44,24 @@ def send_message(
         .all()[:-1]  # exclude the message just added -- passed separately as the question
     ]
 
-    context_chunks = retrieve_relevant_chunks(db, business.id, payload.message)
-    answer = generate_chat_answer(payload.message, context_chunks, history)
+    result = generate_chat_answer(db, business, payload.message, history)
 
-    db.add(Message(conversation_id=conversation.id, role="assistant", content=answer))
+    db.add(
+        Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=result.answer,
+            # [] (answered without tools) is stored as-is — NULL is reserved
+            # for messages predating the agent loop.
+            tool_calls=result.tool_calls,
+        )
+    )
     db.commit()
 
-    return SendMessageResponse(answer=answer)
+    return SendMessageResponse(
+        answer=result.answer,
+        tool_calls=[ToolCallItem(tool=call["tool"], arguments=call["arguments"]) for call in result.tool_calls],
+    )
 
 
 @router.get("/{conversation_id}", response_model=ConversationHistory)
@@ -60,7 +71,10 @@ def get_conversation(conversation: Conversation = Depends(get_owned_conversation
     )
     return ConversationHistory(
         conversation_id=conversation.id,
-        messages=[MessageItem(id=m.id, role=m.role, content=m.content, created_at=m.created_at) for m in messages],
+        messages=[
+            MessageItem(id=m.id, role=m.role, content=m.content, tool_calls=m.tool_calls, created_at=m.created_at)
+            for m in messages
+        ],
     )
 
 
