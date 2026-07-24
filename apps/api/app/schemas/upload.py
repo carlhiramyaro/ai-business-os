@@ -24,6 +24,11 @@ class UploadStatusResponse(CamelModel):
     status: str
     progress: int
     pending_review: list[str] | None = None
+    # True when ingestion detected rows whose content_hash matched a
+    # pre-existing row (or another row in the same batch) for this
+    # business+dataset -- v0.3 dedup safeguard, warn-only (see
+    # app/ingestion.py, docs/decisions.md [2026-07-24]).
+    duplicate_warning: bool = False
 
 
 class ColumnMappingResponse(CamelModel):

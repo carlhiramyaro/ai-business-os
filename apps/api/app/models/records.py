@@ -26,6 +26,10 @@ class Sale(Base):
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True, index=True)
     payment_method = Column(String, nullable=True)
     raw_row_number = Column(Integer, nullable=False)
+    # SHA-256 over (business_id, dataset_type, natural-key fields), computed
+    # by app/ingestion.py -- warn-only dedup detection across producers
+    # (CSV/manual/document), v0.3. See docs/decisions.md [2026-07-24].
+    content_hash = Column(String, nullable=True, index=True)
 
 
 class Inventory(Base):
@@ -42,6 +46,7 @@ class Inventory(Base):
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True, index=True)
     cost_price = Column(Numeric, nullable=True)
     selling_price = Column(Numeric, nullable=True)
+    content_hash = Column(String, nullable=True, index=True)
 
 
 class Expense(Base):
@@ -55,3 +60,4 @@ class Expense(Base):
     vendor = Column(String, nullable=True)
     amount = Column(Numeric, nullable=True)
     description = Column(String, nullable=True)
+    content_hash = Column(String, nullable=True, index=True)

@@ -34,3 +34,11 @@ def delete_prefix(prefix: str) -> None:
 
 def key_for(business_id, upload_session_id, dataset_type: str) -> str:
     return f"businesses/{business_id}/uploads/{upload_session_id}/{dataset_type}.csv"
+
+
+def document_key_for(business_id, upload_session_id) -> str:
+    """v0.3 document processing -- one photographed receipt/invoice per
+    document upload_session. No extension in the key (we don't rely on it
+    for anything; the image's mime type is captured separately and passed
+    to the vision call). See docs/decisions.md [2026-07-24]."""
+    return f"businesses/{business_id}/documents/{upload_session_id}/receipt"

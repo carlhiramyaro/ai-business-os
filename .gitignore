@@ -1,6 +1,9 @@
 # OS / editor
 .DS_Store
 
+# Redis persistence snapshot (local dev broker, not app data)
+dump.rdb
+
 # Secrets (any app in the monorepo)
 .env
 .env.*

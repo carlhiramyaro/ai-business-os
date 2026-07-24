@@ -154,7 +154,12 @@ def test_upload_with_clean_headers_completes_synchronously(real_client, business
     status_response = real_client.get(
         f"/api/v1/businesses/{business_id}/uploads/{upload_session_id}", headers=headers
     )
-    assert status_response.json() == {"status": "COMPLETED", "progress": 100, "pendingReview": None}
+    assert status_response.json() == {
+        "status": "COMPLETED",
+        "progress": 100,
+        "pendingReview": None,
+        "duplicateWarning": False,
+    }
 
     with TestSessionLocal() as db:
         assert db.query(Sale).filter(Sale.upload_session_id == upload_session_id).count() == 1
@@ -317,6 +322,36 @@ def test_upload_report_is_cumulative_across_two_uploads_in_same_period(real_clie
         # "Rice" came from the FIRST upload_session -- proves the second
         # report's query pulled it in by date range, not by upload_session_id.
         assert {s.product_name for s in sales_in_period} == {"Rice", "Beans", "Cassava"}
+
+
+def test_reuploading_overlapping_csv_surfaces_duplicate_warning(real_client, business_id):
+    """v0.3 dedup safeguard (roadmap.md): uploading a CSV that overlaps
+    already-ingested rows must not silently double-count -- at minimum, the
+    second upload's status response flags it. Rows are still inserted
+    (warn-only, never dropped) -- see app/ingestion.py."""
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    first_response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    )
+    first_status = real_client.get(
+        f"/api/v1/businesses/{business_id}/uploads/{first_response.json()['uploadSessionId']}", headers=headers
+    ).json()
+    assert first_status["duplicateWarning"] is False
+
+    second_response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    )
+    second_upload_session_id = second_response.json()["uploadSessionId"]
+    second_status = real_client.get(
+        f"/api/v1/businesses/{business_id}/uploads/{second_upload_session_id}", headers=headers
+    ).json()
+    assert second_status["duplicateWarning"] is True
+
+    # warn-only: the duplicate sales row is still there, not dropped
+    with TestSessionLocal() as db:
+        assert db.query(Sale).filter(Sale.business_id == uuid.UUID(business_id)).count() == 2
 
 
 def test_delete_upload_removes_children(real_client, business_id):

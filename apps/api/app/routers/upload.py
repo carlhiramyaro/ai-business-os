@@ -134,6 +134,7 @@ def get_upload_status(
         status=upload_session.status,
         progress=STATUS_PROGRESS.get(upload_session.status, 0),
         pending_review=pending_review,
+        duplicate_warning=upload_session.duplicate_warning,
     )
 
 

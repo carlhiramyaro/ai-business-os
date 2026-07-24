@@ -17,6 +17,7 @@ import {
   updateColumnMapping,
 } from "@/lib/api";
 import { BusinessPicker } from "@/components/BusinessPicker";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
@@ -117,7 +118,7 @@ export default function UploadPage() {
         expenses: expensesFile,
       });
       setUploadSessionId(created.uploadSessionId);
-      setStatus({ status: "PROCESSING", progress: 50, pendingReview: null });
+      setStatus({ status: "PROCESSING", progress: 50, pendingReview: null, duplicateWarning: false });
       startPolling(created.uploadSessionId, businessId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
@@ -136,7 +137,7 @@ export default function UploadPage() {
         }
       }
       await confirmColumnMappings(accessToken, businessId, uploadSessionId);
-      setStatus({ status: "PROCESSING", progress: 50, pendingReview: null });
+      setStatus({ status: "PROCESSING", progress: 50, pendingReview: null, duplicateWarning: false });
       startPolling(uploadSessionId, businessId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not confirm mappings");
@@ -247,6 +248,15 @@ export default function UploadPage() {
           {status.status === "COMPLETED" && (
             <div className="flex flex-col gap-3">
               <p className="text-sm text-success-fg">Upload complete — the report is ready.</p>
+              {status.duplicateWarning && (
+                <div className="flex items-start gap-2">
+                  <Badge tone="warning">Possible duplicates</Badge>
+                  <p className="text-sm text-muted">
+                    Some rows in this upload look like data you&apos;ve already entered — they were still added,
+                    nothing was dropped, but check for double-counting.
+                  </p>
+                </div>
+              )}
               <div className="flex gap-3">
                 <Link href="/reports">
                   <Button>View report</Button>

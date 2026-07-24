@@ -122,6 +122,10 @@ export interface UploadStatus {
   status: UploadStatusValue;
   progress: number;
   pendingReview: string[] | null;
+  // True when ingestion detected rows that look like a repeat of data
+  // already in the business's tables (v0.3 dedup safeguard, warn-only --
+  // rows are still ingested, never dropped). See app/ingestion.py.
+  duplicateWarning: boolean;
 }
 
 export function getUploadStatus(accessToken: string, businessId: string, uploadSessionId: string) {
@@ -295,4 +299,128 @@ export function getConversation(accessToken: string, businessId: string, convers
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/chat/${conversationId}`, {
     headers: authHeaders(accessToken),
   }).then((response) => parseJsonOrThrow<ConversationHistory>(response));
+}
+
+// Quick manual entry (v0.3) -- one-row batches through the same ingest
+// boundary the CSV pipeline uses. See app/ingestion.py, docs/decisions.md
+// [2026-07-24].
+
+export interface EntryCreateResponse {
+  id: string;
+  duplicateWarning: boolean;
+}
+
+export interface SaleEntryInput {
+  saleDate: string;
+  productName: string;
+  category?: string;
+  quantity: number;
+  unitPrice?: string;
+  discount?: string;
+  totalAmount?: string;
+  customerName?: string;
+  customerPhone?: string;
+  paymentMethod?: string;
+}
+
+export function createSaleEntry(accessToken: string, businessId: string, entry: SaleEntryInput) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/sales`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify(entry),
+  }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
+}
+
+export interface ExpenseEntryInput {
+  expenseDate: string;
+  category: string;
+  vendor?: string;
+  amount: string;
+  description?: string;
+}
+
+export function createExpenseEntry(accessToken: string, businessId: string, entry: ExpenseEntryInput) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/expenses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify(entry),
+  }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
+}
+
+export interface InventoryEntryInput {
+  productName: string;
+  category?: string;
+  quantity: number;
+  reorderLevel?: number;
+  supplier?: string;
+  costPrice?: string;
+  sellingPrice?: string;
+}
+
+export function createInventoryEntry(accessToken: string, businessId: string, entry: InventoryEntryInput) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/inventory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify(entry),
+  }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
+}
+
+// Document processing (v0.3) -- photograph a receipt/invoice, review the
+// vision-extracted rows, confirm. Mirrors the CSV column-mapping review
+// flow. See app/routers/documents.py, docs/decisions.md [2026-07-24].
+
+export interface DocumentCreateResponse {
+  uploadSessionId: string;
+  status: UploadStatusValue;
+}
+
+export interface DocumentStatus {
+  status: UploadStatusValue;
+  progress: number;
+  datasetType: string | null;
+  extractedRows: Record<string, string>[] | null;
+  overallConfidence: number | null;
+}
+
+export function uploadDocument(accessToken: string, businessId: string, datasetType: string, image: File) {
+  const formData = new FormData();
+  formData.append("datasetType", datasetType);
+  formData.append("image", image);
+
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+    body: formData,
+  }).then((response) => parseJsonOrThrow<DocumentCreateResponse>(response));
+}
+
+export function getDocumentStatus(accessToken: string, businessId: string, sessionId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<DocumentStatus>(response));
+}
+
+export function updateDocumentRows(
+  accessToken: string,
+  businessId: string,
+  sessionId: string,
+  extractedRows: Record<string, string>[]
+) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify({ extractedRows }),
+  }).then((response) => parseJsonOrThrow<DocumentStatus>(response));
+}
+
+export interface DocumentConfirmResponse {
+  status: UploadStatusValue;
+  duplicateWarning: boolean;
+}
+
+export function confirmDocument(accessToken: string, businessId: string, sessionId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}/confirm`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<DocumentConfirmResponse>(response));
 }
