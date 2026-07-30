@@ -156,3 +156,41 @@ resource "aws_ssm_parameter" "sentry_traces_sample_rate" {
   type  = "String"
   value = "0.0"
 }
+
+# Same placeholder pattern as OPENAI_API_KEY/SENTRY_DSN above -- create a
+# Langfuse project and set the real values once you have them:
+#   aws ssm put-parameter --name /ai-business-os/prod/LANGFUSE_PUBLIC_KEY \
+#     --type SecureString --value pk-lf-... --overwrite
+#   aws ssm put-parameter --name /ai-business-os/prod/LANGFUSE_SECRET_KEY \
+#     --type SecureString --value sk-lf-... --overwrite
+resource "aws_ssm_parameter" "langfuse_public_key" {
+  name  = "${local.ssm_path}/LANGFUSE_PUBLIC_KEY"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "langfuse_secret_key" {
+  name  = "${local.ssm_path}/LANGFUSE_SECRET_KEY"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "langfuse_host" {
+  name  = "${local.ssm_path}/LANGFUSE_HOST"
+  type  = "String"
+  value = "https://cloud.langfuse.com"
+}
+
+resource "aws_ssm_parameter" "langfuse_tracing_enabled" {
+  name  = "${local.ssm_path}/LANGFUSE_TRACING_ENABLED"
+  type  = "String"
+  value = "true"
+}

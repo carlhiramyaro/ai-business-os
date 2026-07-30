@@ -8,6 +8,15 @@ from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
 
+# Redundant with app/observability.py's own "no LANGFUSE_PUBLIC_KEY -> skip
+# init" guard and ci.yml's env block -- three independent layers so tests
+# can never start making real network calls to Langfuse regardless of
+# what's in a developer's local .env. Set unconditionally (not
+# setdefault): even a real key present locally shouldn't make the test
+# suite itself trace anything -- manual local verification happens outside
+# pytest (docker compose up). See docs/infra-guide.md.
+os.environ["LANGFUSE_TRACING_ENABLED"] = "false"
+
 TEST_DATABASE_URL = (
     f"postgresql://{os.getenv('POSTGRES_USER')}:"
     f"{os.getenv('POSTGRES_PASSWORD')}@"

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, status
+from langfuse import propagate_attributes
 from sqlalchemy.orm import Session
 
 from app.chat_generation import generate_chat_answer
@@ -44,7 +45,12 @@ def send_message(
         .all()[:-1]  # exclude the message just added -- passed separately as the question
     ]
 
-    result = generate_chat_answer(db, business, payload.message, history)
+    # session_id=conversation_id groups every LLM/embedding call this
+    # request makes (up to 6 completions across the tool-calling loop plus
+    # tool-call/embedding spans) into one Langfuse trace. See
+    # app/chat_generation.py's @observe on generate_chat_answer.
+    with propagate_attributes(session_id=str(conversation.id), metadata={"business_id": str(business.id)}):
+        result = generate_chat_answer(db, business, payload.message, history)
 
     db.add(
         Message(

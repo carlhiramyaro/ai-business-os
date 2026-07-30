@@ -7,8 +7,10 @@ the next run doesn't create a second insight -- see docs/decisions.md.
 """
 
 import hashlib
+import uuid
 from datetime import date, timedelta
 
+from langfuse import observe, propagate_attributes
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -109,10 +111,19 @@ def _collect_signals(db: Session, business: Business, today: date) -> list[dict]
     return signals
 
 
+@observe(name="business_analysis")
 def run_business_analysis(db: Session, business: Business, today: date | None = None) -> int:
     """Detects signals, narrates and persists the new ones (skipping any
     whose fingerprint already exists for this business), and returns the
     count of insights created."""
+    # No persisted "analysis run" row to key off of (unlike report_id for
+    # reports) -- one uuid4 per call groups this run's narrate_insight
+    # calls (N per run, unbounded) and retrieval embeddings into one trace.
+    with propagate_attributes(session_id=str(uuid.uuid4()), metadata={"business_id": str(business.id)}):
+        return _run_business_analysis_body(db, business, today)
+
+
+def _run_business_analysis_body(db: Session, business: Business, today: date | None) -> int:
     today = today or date.today()
     signals = _collect_signals(db, business, today)
     if not signals:

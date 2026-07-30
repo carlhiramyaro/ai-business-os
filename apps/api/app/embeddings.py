@@ -1,7 +1,10 @@
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+# Drop-in replacement for openai.OpenAI -- also instruments embeddings.create,
+# not just chat completions. See docs/infra-guide.md.
+from langfuse.openai import OpenAI
 
 load_dotenv()
 

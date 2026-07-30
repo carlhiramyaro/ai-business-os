@@ -1,13 +1,13 @@
-"""Error tracking (Sentry) and, from a later commit, LLM tracing
-(Langfuse) -- both shared by the FastAPI process (main.py) and the Celery
-worker/beat processes (app/celery_app.py's worker_process_init/beat_init
-signals). See docs/infra-guide.md.
+"""Error tracking (Sentry) and LLM tracing (Langfuse) -- both shared by the
+FastAPI process (main.py) and the Celery worker/beat processes
+(app/celery_app.py's worker_process_init/beat_init signals). See
+docs/infra-guide.md.
 
 Init lives here rather than directly in main.py/celery_app.py because it
 needs to run in a specific way per process: main.py can just call it at
 import time, but the Celery worker must NOT init at import time -- Celery
-forks worker children after importing app.tasks, and (once Langfuse is
-added here) a background-thread-based span exporter does not survive
+forks worker children after importing app.tasks, and Langfuse's OTel
+BatchSpanProcessor runs on a background thread that does not survive
 fork(). worker_process_init fires post-fork, in each child, which is the
 correct place.
 """
@@ -15,6 +15,7 @@ correct place.
 import os
 
 import sentry_sdk
+from langfuse import Langfuse
 from sentry_sdk.integrations.celery import CeleryIntegration
 
 _initialized = False
@@ -30,6 +31,17 @@ def init_observability(service: str) -> None:
     _initialized = True
 
     _init_sentry(service)
+    _init_langfuse(service)
+
+
+def flush_observability() -> None:
+    """Called from worker_process_shutdown -- Langfuse batches spans on a
+    background thread and a Celery prefork child exiting doesn't wait
+    around for that thread to drain on its own."""
+    if os.getenv("LANGFUSE_PUBLIC_KEY"):
+        from langfuse import get_client
+
+        get_client().flush()
 
 
 def _init_sentry(service: str) -> None:
@@ -53,3 +65,24 @@ def _init_sentry(service: str) -> None:
         integrations=[CeleryIntegration(monitor_beat_tasks=True)],
     )
     sentry_sdk.set_tag("service", service)
+
+
+def _init_langfuse(service: str) -> None:
+    # Explicit early return (rather than relying solely on the SDK's own
+    # env-var handling) is one of three redundant no-op-safety layers for
+    # CI/local dev with no Langfuse project configured -- see
+    # LANGFUSE_TRACING_ENABLED below and in tests/conftest.py for the
+    # other two. See docs/infra-guide.md.
+    if not os.getenv("LANGFUSE_PUBLIC_KEY"):
+        return
+
+    tracing_enabled = os.getenv("LANGFUSE_TRACING_ENABLED", "true").lower() != "false"
+
+    Langfuse(
+        public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+        secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+        host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        environment=os.getenv("SENTRY_ENVIRONMENT", "local"),
+        release=os.getenv("IMAGE_TAG"),
+        tracing_enabled=tracing_enabled,
+    )

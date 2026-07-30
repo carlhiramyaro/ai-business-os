@@ -5,7 +5,14 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+# Drop-in replacement for openai.OpenAI -- traces every call to Langfuse
+# with no other code change. See docs/infra-guide.md. propagate_attributes
+# (session_id=conversation_id) is applied at the call site in
+# app/routers/chat.py, not here -- this function doesn't receive
+# conversation_id itself.
+from langfuse import observe
+from langfuse.openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.business_facts import remember_fact
@@ -102,6 +109,7 @@ def _execute(db: Session, business_id: uuid.UUID, name: str, arguments: dict) ->
     return execute_tool(db, business_id, name, arguments)
 
 
+@observe(name="chat_answer")
 def generate_chat_answer(db: Session, business, question: str, history: list[dict]) -> ChatAnswer:
     """history: [{"role": "user"|"assistant", "content": "..."}], oldest first.
 

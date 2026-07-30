@@ -22,7 +22,14 @@ import json
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+# Drop-in replacement for openai.OpenAI -- traces every call to Langfuse
+# with no other code change. See docs/infra-guide.md. propagate_attributes
+# (session_id=upload_session_id) is applied at the call site in
+# app/tasks.py's extract_document_task, not here -- this function doesn't
+# receive upload_session_id itself.
+from langfuse import observe
+from langfuse.openai import OpenAI
 
 from app.column_mapping import CANONICAL_FIELDS
 
@@ -77,6 +84,7 @@ def _parse_extraction_response(raw: dict, dataset_type: str) -> dict:
     return {"rows": rows, "confidence": confidence}
 
 
+@observe(name="extract_document")
 def extract_document(image_bytes: bytes, dataset_type: str, *, mime_type: str = "image/jpeg") -> dict:
     """Returns {"rows": [{<canonical camelCase field>: <raw value>, ...}, ...],
     "confidence": 0.0-1.0}. Rows are NOT cast/typed yet -- that happens in

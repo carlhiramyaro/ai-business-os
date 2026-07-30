@@ -2,6 +2,7 @@ import json
 import uuid
 from datetime import date
 
+from langfuse import observe, propagate_attributes
 from sqlalchemy.orm import Session
 
 from app.embedding_generation import generate_embeddings_for_report
@@ -58,7 +59,18 @@ def _mark_report_failed(db: Session, report: Report) -> None:
     db.commit()
 
 
+@observe(name="generate_report")
 def _populate_report(db: Session, business: Business, report: Report) -> None:
+    # Both entry paths (generate_report and run_report_generation) converge
+    # here -- this is the one trace-grouping boundary for a whole report:
+    # 4 concurrent analyst generations + 1 manager + N embedding spans, all
+    # as one Langfuse trace keyed by report.id. See docs/learning-guide.md
+    # §2.5's "group traces by request" promise and docs/infra-guide.md.
+    with propagate_attributes(session_id=str(report.id), metadata={"business_id": str(business.id)}):
+        _populate_report_body(db, business, report)
+
+
+def _populate_report_body(db: Session, business: Business, report: Report) -> None:
     # The caller's session may have pending (unflushed) sales/inventory/
     # expenses inserts from the same transaction -- SessionLocal has
     # autoflush=False, so they wouldn't otherwise be visible to the

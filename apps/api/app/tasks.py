@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 from dotenv import load_dotenv
+from langfuse import observe, propagate_attributes
 from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
@@ -43,6 +44,17 @@ def _provided_dataset_types(upload_session: UploadSession) -> list[str]:
 
 @celery_app.task(name="run_column_mapping")
 def run_column_mapping_task(upload_session_id: str):
+    # propagate_attributes wraps the call from outside rather than being
+    # stacked as a second decorator under @celery_app.task -- avoids any
+    # risk of Celery's task registration/signature introspection
+    # misbehaving under a doubly-decorated function. See
+    # docs/infra-guide.md.
+    with propagate_attributes(session_id=str(upload_session_id)):
+        _run_column_mapping(upload_session_id)
+
+
+@observe(name="column_mapping")
+def _run_column_mapping(upload_session_id: str):
     db: Session = SessionLocal()
     upload_session = None
     try:
@@ -240,7 +252,8 @@ def extract_document_task(upload_session_id: str, dataset_type: str, mime_type: 
         key = document_key_for(upload_session.business_id, upload_session.id)
         image_bytes = download_fileobj(key).read()
 
-        result = extract_document(image_bytes, dataset_type, mime_type=mime_type)
+        with propagate_attributes(session_id=str(upload_session_id)):
+            result = extract_document(image_bytes, dataset_type, mime_type=mime_type)
 
         db.add(
             DocumentExtraction(

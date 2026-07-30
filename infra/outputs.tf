@@ -37,10 +37,15 @@ output "next_steps" {
     2. Same for Sentry, once you've created a project and have a DSN:
        aws ssm put-parameter --name ${local.ssm_path}/SENTRY_DSN \
          --type SecureString --value https://...@....ingest.sentry.io/... --overwrite --region ${var.aws_region}
-    3. If the domain is registered outside Route 53, delegate it to the
+    3. Same for Langfuse, once you've created a project:
+       aws ssm put-parameter --name ${local.ssm_path}/LANGFUSE_PUBLIC_KEY \
+         --type SecureString --value pk-lf-... --overwrite --region ${var.aws_region}
+       aws ssm put-parameter --name ${local.ssm_path}/LANGFUSE_SECRET_KEY \
+         --type SecureString --value sk-lf-... --overwrite --region ${var.aws_region}
+    4. If the domain is registered outside Route 53, delegate it to the
        name servers in the `route53_name_servers` output above.
-    4. Add `github_actions_role_arn`'s value to .github/workflows/deploy.yml.
-    5. Push to main to run the first real deploy -- it overwrites the
+    5. Add `github_actions_role_arn`'s value to .github/workflows/deploy.yml.
+    6. Push to main to run the first real deploy -- it overwrites the
        bootstrap image tag on the box and brings the stack up for real.
   EOT
 }

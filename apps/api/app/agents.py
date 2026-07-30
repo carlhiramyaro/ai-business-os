@@ -2,7 +2,11 @@ import json
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+# Drop-in replacement for openai.OpenAI -- traces every call (prompt,
+# completion, tokens, latency, cost) to Langfuse with no other code change.
+# See docs/infra-guide.md.
+from langfuse.openai import OpenAI
 
 load_dotenv()
 

@@ -2,11 +2,18 @@ import os
 
 import structlog
 from celery import Celery
-from celery.signals import beat_init, task_failure, task_postrun, task_prerun, worker_process_init
+from celery.signals import (
+    beat_init,
+    task_failure,
+    task_postrun,
+    task_prerun,
+    worker_process_init,
+    worker_process_shutdown,
+)
 from dotenv import load_dotenv
 
 from app.logging_config import configure_logging
-from app.observability import init_observability
+from app.observability import flush_observability, init_observability
 
 load_dotenv()
 
@@ -28,9 +35,8 @@ _logger = structlog.get_logger(__name__)
 # Runs post-fork in each prefork worker child (and once in beat), not at
 # import time -- import-time init here would run in the API process too
 # (main.py transitively imports this module via app.worker_health), and
-# separately, background-thread-based exporters (Langfuse's OTel batch
-# processor, added in a later commit) don't survive Celery's fork(). See
-# docs/infra-guide.md.
+# separately, Langfuse's OTel BatchSpanProcessor runs on a background
+# thread that does not survive Celery's fork(). See docs/infra-guide.md.
 @worker_process_init.connect
 def _init_worker_observability(**kwargs):
     configure_logging("worker")
@@ -41,6 +47,11 @@ def _init_worker_observability(**kwargs):
 def _init_beat_observability(**kwargs):
     configure_logging("beat")
     init_observability("beat")
+
+
+@worker_process_shutdown.connect
+def _flush_worker_observability(**kwargs):
+    flush_observability()
 
 
 @task_prerun.connect
@@ -63,7 +74,7 @@ def _log_task_failure(task_id=None, exception=None, sender=None, traceback=None,
     including run_business_analysis_task and dispatch_scheduled_analysis_task,
     which have no exception handling of their own -- a failure there was
     100% silent before this (see docs/decisions.md). Sentry's
-    CeleryIntegration (added in a later commit) already auto-captures task
+    CeleryIntegration (app/observability.py) already auto-captures task
     failures for error tracking; this handler is the structured-logging
     half of that story, not a duplicate of it.
 

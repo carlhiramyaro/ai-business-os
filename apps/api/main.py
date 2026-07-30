@@ -1,5 +1,6 @@
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 import structlog
 from dotenv import load_dotenv
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.logging_config import configure_logging
-from app.observability import init_observability
+from app.observability import flush_observability, init_observability
 from app.routers import auth, business, chat, documents, entities, entries, insights, memory, report, upload
 from app.worker_health import workers_online
 
@@ -26,7 +27,17 @@ configure_logging("api")
 init_observability("api")
 logger = structlog.get_logger(__name__)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    # Langfuse batches spans on a background thread -- flush on graceful
+    # shutdown (e.g. a deploy's container swap) so in-flight traces aren't
+    # silently dropped.
+    flush_observability()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Comma-separated list of allowed frontend origins. Defaults to local dev;
 # production sets this via SSM (e.g. "https://app.example.com") so the
