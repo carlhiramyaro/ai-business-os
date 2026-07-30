@@ -34,6 +34,9 @@ def auth_header(token):
 
 def _create_report(monkeypatch, client, db_session, email):
     monkeypatch.setattr("app.agents._call_llm", fake_call_llm)
+    # generate_report populates RAG embeddings for the report as a side
+    # effect (app/embedding_generation.py) -- a real OpenAI call if unmocked.
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
     token = register_and_login(client, email)
 
     created = client.post(

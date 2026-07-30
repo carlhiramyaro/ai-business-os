@@ -102,6 +102,12 @@ def _seed_business_with_signals(db):
 
 def test_run_business_analysis_creates_expected_insights(monkeypatch):
     monkeypatch.setattr("app.agents._call_llm", fake_narration_llm)
+    # app.retrieval imports generate_embedding into its own namespace (a
+    # separate binding from app.embedding_generation's), so
+    # run_business_analysis -> narrate_insight -> retrieve_relevant_chunks
+    # needs its own patch target -- see tests/test_retrieval.py for the
+    # same pattern.
+    monkeypatch.setattr("app.retrieval.generate_embedding", lambda text: [0.0] * 1536)
 
     db = TestSessionLocal()
     try:
@@ -148,6 +154,9 @@ def test_run_business_analysis_includes_relevant_business_facts_in_narration(mon
     _call_llm's user_content payload, since fake_narration_llm's return
     value doesn't otherwise reveal what it was given."""
     monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
+    # Separate binding from the line above -- see this file's other test
+    # for why both are needed.
+    monkeypatch.setattr("app.retrieval.generate_embedding", lambda text: [0.0] * 1536)
 
     calls = []
 

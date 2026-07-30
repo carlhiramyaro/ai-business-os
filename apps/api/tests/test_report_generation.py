@@ -126,6 +126,9 @@ def test_generate_report_writes_report_sections_and_agent_runs(monkeypatch, db_s
         return fake_call_llm(system_prompt, user_content)
 
     monkeypatch.setattr("app.agents._call_llm", recording_fake_call_llm)
+    # generate_report populates RAG embeddings for the report as a side
+    # effect (app/embedding_generation.py) -- a real OpenAI call if unmocked.
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
     business, upload_session = _seed_business_with_data(db_session)
 
     report = generate_report(
@@ -173,6 +176,7 @@ def test_generate_report_is_cumulative_across_upload_sessions_within_period(monk
         return fake_call_llm(system_prompt, user_content)
 
     monkeypatch.setattr("app.agents._call_llm", recording_fake_call_llm)
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
 
     business, first_upload_session = _seed_business_with_data(
         db_session, sale_date=date(2026, 1, 5), expense_date=date(2026, 1, 5), raw_row_number=1

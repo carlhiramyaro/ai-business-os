@@ -69,9 +69,15 @@ def fake_download_fileobj(key):
     return io.BytesIO(FAKE_S3[key])
 
 
+def fake_delete_prefix(prefix):
+    for key in [k for k in FAKE_S3 if k.startswith(prefix)]:
+        del FAKE_S3[key]
+
+
 @pytest.fixture(autouse=True)
 def _patch_storage_and_db(monkeypatch):
     monkeypatch.setattr(upload_router, "upload_fileobj", fake_upload_fileobj)
+    monkeypatch.setattr(upload_router, "delete_prefix", fake_delete_prefix)
     monkeypatch.setattr(tasks, "download_fileobj", fake_download_fileobj)
     monkeypatch.setattr(tasks, "SessionLocal", TestSessionLocal)
     monkeypatch.setattr("app.agents._call_llm", fake_call_llm)
@@ -405,6 +411,10 @@ def test_confirm_column_mappings_returns_503_when_worker_offline(monkeypatch, re
 
     # Get a real session into NEEDS_REVIEW with the worker still "online"
     # (ambiguous header forces low-confidence mapping -> NEEDS_REVIEW).
+    # Mocked the same way as test_upload_with_ambiguous_header_needs_review_then_resumes
+    # -- the "Thing" header is deliberately unrecognized by the heuristic
+    # matcher, so this reaches the real llm_match call unless mocked.
+    monkeypatch.setattr(column_mapping, "llm_match", lambda header, dataset_type, samples: ("productName", 0.4))
     response = real_client.post(
         f"/api/v1/businesses/{business_id}/uploads/",
         files=_upload_files(sales=CLEAN_SALES_CSV.replace(b"Item", b"Thing")),
