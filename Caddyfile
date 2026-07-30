@@ -1,0 +1,23 @@
+# Reverse proxy + automatic TLS for both subdomains. Caddy requests and
+# renews Let's Encrypt certificates on its own via ACME's HTTP-01
+# challenge -- the only prerequisite is that app.<domain>/api.<domain>
+# already resolve to this box's Elastic IP (infra/dns.tf), since that's
+# how Let's Encrypt verifies domain ownership. A bare IP with no domain
+# has nothing for ACME to validate, which is why Caddy can't get a cert
+# without one. See docs/infra-guide.md's "TLS and Caddy" section.
+#
+# {$DOMAIN_NAME} is Caddy's own native env-var substitution, resolved from
+# the `caddy` service's container environment at startup (see
+# docker-compose.prod.yml, which feeds it DOMAIN_NAME via app.env/SSM) --
+# not by Terraform text-substitution. This file's content ships to the box
+# completely unmodified (embedded verbatim into user-data by infra/ec2.tf),
+# so it never needs per-environment editing. Local dev needs no TLS at all
+# (plain http://localhost:3000), so this file is prod-only.
+
+app.{$DOMAIN_NAME} {
+	reverse_proxy web:3000
+}
+
+api.{$DOMAIN_NAME} {
+	reverse_proxy api:8000
+}

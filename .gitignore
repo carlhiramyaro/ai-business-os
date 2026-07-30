@@ -12,3 +12,18 @@ dump.rdb
 # Local docs (not for GitHub)
 docs/
 CLAUDE.md
+
+# Terraform working-directory artifacts (infra/) -- .terraform/ can contain
+# downloaded provider binaries and backend metadata; state itself lives
+# remotely in S3 (infra/versions.tf), never here. *.tfvars is excluded on
+# the chance a future one holds real values instead of just var references.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!example.tfvars

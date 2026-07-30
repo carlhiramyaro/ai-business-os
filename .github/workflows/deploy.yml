@@ -1,0 +1,116 @@
+# Builds both images, pushes them to ECR tagged by git SHA, then tells the
+# EC2 box (via SSM -- no SSH) to pull and start them. Runs after `ci.yml`
+# passes on main, so nothing untested reaches production. See
+# docs/infra-guide.md's "Deploy mechanics" section.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # manual re-run, e.g. to roll back to an older commit's build
+
+permissions:
+  id-token: write # required for OIDC -- no AWS access key is stored anywhere
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # From `terraform output github_actions_role_arn` / `ecr_repository_urls` /
+  # `instance_id`, filled in after the first `terraform apply`.
+  AWS_ROLE_ARN: arn:aws:iam::257394455722:role/ai-business-os-prod-github-deploy
+  ECR_REGISTRY: 257394455722.dkr.ecr.us-east-1.amazonaws.com
+  INSTANCE_ID: i-032d37d91fb61c337
+  # Domain's api subdomain -- must match infra/variables.tf's domain_name.
+  API_URL: https://api.iamledger.app
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.value }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: echo "value=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push api image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/api
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/ai-business-os/api:${{ steps.tag.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/web
+          push: true
+          # NEXT_PUBLIC_API_URL is inlined at build time -- see
+          # apps/web/Dockerfile's docstring -- so it must be supplied here,
+          # not left for the container to read at runtime.
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ env.API_URL }}
+          tags: ${{ env.ECR_REGISTRY }}/ai-business-os/web:${{ steps.tag.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # SSM Run Command -- executes on the box over the SSM agent, no SSH
+      # port, no key pair. See infra/iam.tf's instance role and
+      # infra/ec2.tf's user-data (which installed the SSM agent's
+      # prerequisites and wrote /opt/app/refresh-env.sh).
+      #
+      # Migration ordering matters here: `alembic upgrade head` runs
+      # BEFORE `up -d` recreates the containers, so for a brief window the
+      # OLD code runs against the NEW schema. That's exactly why
+      # CLAUDE.md's additive-migration rule (new nullable columns, never
+      # rewriting existing ones) isn't just tidiness -- it's what makes
+      # this ordering safe. See docs/infra-guide.md's "Deploy mechanics".
+      - name: Deploy via SSM
+        run: |
+          command_id=$(aws ssm send-command \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${{ needs.build-and-push.outputs.image_tag }}" \
+            --parameters commands="[
+              'set -euxo pipefail',
+              'cd /opt/app',
+              '/opt/app/refresh-env.sh ${{ env.AWS_REGION }} /ai-business-os/prod',
+              'sed -i \"s#^IMAGE_TAG=.*#IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}#\" .env',
+              'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}',
+              'docker compose -f docker-compose.prod.yml pull',
+              'docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head',
+              'docker compose -f docker-compose.prod.yml up -d',
+              'docker system prune -af'
+            ]" \
+            --query "Command.CommandId" --output text)
+
+          aws ssm wait command-executed \
+            --command-id "$command_id" \
+            --instance-id "${{ env.INSTANCE_ID }}"
+
+          aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "${{ env.INSTANCE_ID }}"

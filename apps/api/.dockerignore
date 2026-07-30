@@ -1,0 +1,20 @@
+# Never send these into the build context -- .env in particular would get
+# baked into an image layer (OpenAI key, JWT secret) and pushed to ECR.
+# See docs/infra-guide.md's Docker fundamentals section.
+.env
+.env.*
+!.env.example
+
+myenv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Local dev artifacts, not app code
+dump.rdb
+.DS_Store
+
+# VCS/editor
+.git/
+.gitignore

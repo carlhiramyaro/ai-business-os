@@ -1,0 +1,38 @@
+# Human-edited source list -- compile to requirements.txt with:
+#   pip-compile --generate-hashes requirements.in
+# Pinned to the exact versions already installed and tested in myenv (see
+# `pip freeze` at the time this was introduced) rather than "latest", so
+# introducing pip-compile doesn't silently change behavior on top of fixing
+# reproducibility. Bump a version here deliberately, then re-compile.
+fastapi==0.139.0
+uvicorn[standard]==0.50.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+alembic==1.18.5
+pyjwt==2.13.0
+bcrypt==5.0.0
+pydantic[email]==2.13.4
+pytest==9.1.1
+httpx==0.28.1
+boto3==1.43.50
+celery[redis]==5.6.3
+pandas==3.0.3
+openai==2.46.0
+python-multipart==0.0.32
+langgraph==1.2.9
+pgvector==0.5.0
+
+# Explicit, not just left as a transitive pin -- sqlalchemy's own package
+# metadata declares this as a hard install_requires, gated by a
+# platform_machine marker that checks for "aarch64" (Linux's name for
+# arm64). macOS reports "arm64" instead, so pip-compile run on this Mac
+# evaluates the marker false and silently drops greenlet from the lock
+# file -- even though every actual deploy target (linux/amd64 in CI/EC2,
+# and the linux/arm64 image this Mac's Docker builds locally) evaluates it
+# true, so pip demands it be present and hashed. This project never uses
+# SQLAlchemy's async engine, so greenlet is otherwise dead weight -- but
+# `pip install --require-hashes` still fails without it, since the
+# dependency is declared unconditionally on those platforms regardless of
+# whether the code ever imports it. See docs/decisions.md.
+greenlet==3.5.4

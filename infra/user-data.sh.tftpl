@@ -1,0 +1,101 @@
+#!/bin/bash
+# EC2 first-boot bootstrap for Amazon Linux 2023. Installs Docker + the
+# Compose plugin + AWS CLI, writes the app's compose/Caddy config (baked
+# in from the repo at apply time -- see ec2.tf's docstring), and starts
+# the stack via a systemd unit so it also comes back on any future reboot.
+# See docs/infra-guide.md.
+set -euxo pipefail
+
+dnf update -y
+dnf install -y docker
+systemctl enable --now docker
+
+# Compose v2 isn't in AL2023's dnf repos -- installed per Docker's official
+# manual-install instructions (docs.docker.com/compose/install/linux).
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# AL2023 doesn't bundle the AWS CLI by default either.
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
+
+mkdir -p /opt/app
+cd /opt/app
+
+# Quoted heredoc terminators below ('COMPOSE_EOF' etc.) are deliberate --
+# they stop bash from expanding anything inside while writing the file, so
+# docker-compose.prod.yml's own $${ECR_REGISTRY}/$${IMAGE_TAG} tokens land
+# on disk literally, for Compose itself to resolve later from .env, not
+# for this boot script to touch.
+cat > docker-compose.prod.yml <<'COMPOSE_EOF'
+${docker_compose_prod_content}
+COMPOSE_EOF
+
+cat > Caddyfile <<'CADDY_EOF'
+${caddyfile_content}
+CADDY_EOF
+
+# Compose-level interpolation vars ONLY (ECR_REGISTRY/IMAGE_TAG) -- every
+# other value lives in app.env, fetched from SSM below. Kept in separate
+# files so a secrets refresh can never wipe out the currently-deployed
+# image tag; see docker-compose.prod.yml's docstring for the full reasoning.
+cat > .env <<ENV_EOF
+ECR_REGISTRY=${ecr_account}.dkr.ecr.${aws_region}.amazonaws.com
+IMAGE_TAG=bootstrap
+ENV_EOF
+
+# Regenerates app.env from SSM Parameter Store. Safe to rerun any time --
+# every value here is fully SSM-derived, so nothing is lost by
+# regenerating the whole file wholesale. Runs at boot (below) and again
+# from .github/workflows/deploy.yml before every deploy, so a secret
+# rotated in SSM takes effect on the next deploy without a reboot.
+cat > refresh-env.sh <<'REFRESH_EOF'
+#!/bin/bash
+set -euo pipefail
+region="$1"
+path="$2"
+tmp=$(mktemp)
+aws ssm get-parameters-by-path --path "$path" --with-decryption --region "$region" \
+  --query "Parameters[*].[Name,Value]" --output text \
+  | while IFS=$'\t' read -r name value; do
+      echo "$(basename "$name")=$value"
+    done > "$tmp"
+mv "$tmp" /opt/app/app.env
+chmod 600 /opt/app/app.env
+REFRESH_EOF
+chmod +x refresh-env.sh
+
+cat > /etc/systemd/system/app.service <<SERVICE_EOF
+[Unit]
+Description=ai-business-os app stack
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/app
+ExecStartPre=/opt/app/refresh-env.sh ${aws_region} ${ssm_path}
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml pull
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+systemctl daemon-reload
+systemctl enable app.service
+
+# First boot's `docker compose pull` fails -- IMAGE_TAG=bootstrap doesn't
+# exist in ECR until the first real deploy overwrites .env with an actual
+# git SHA. That failure is expected: the unit sits "inactive (failed)"
+# until then, and everything else above (Docker, Compose, the fetch
+# script, the config files) is exactly what needs to be in place before
+# that first deploy runs.
+systemctl start app.service || true

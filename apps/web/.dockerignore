@@ -1,0 +1,15 @@
+# .env would get baked into an image layer if it weren't excluded here.
+# See docs/infra-guide.md's Docker fundamentals section.
+.env
+.env.*
+!.env.example
+
+node_modules/
+.next/
+next-env.d.ts
+npm-debug.log*
+
+# VCS/editor
+.git/
+.gitignore
+.DS_Store

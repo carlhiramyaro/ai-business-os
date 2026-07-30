@@ -1,0 +1,135 @@
+# Runs alone on the EC2 box -- NOT merged with docker-compose.yml as a
+# Compose "override" (that would fight over build: vs image: for the same
+# service names). docker-compose.yml stays a pure local-dev artifact;
+# this is the complete, separate definition the deploy pipeline pulls and
+# starts in production. See docs/infra-guide.md's Compose section.
+#
+# Differences from local dev, and why:
+#   - No `postgres` service -- RDS is external (see infra/rds.tf). Managed
+#     backups and point-in-time recovery matter for customer data in a way
+#     a container-with-a-volume can't give you.
+#   - `redis` stays a container -- the Celery broker holds no durable
+#     state worth losing, so ElastiCache's ~$12/mo isn't worth it here.
+#   - `image:`, never `build:` -- every image is built and pushed to ECR
+#     by CI (.github/workflows/deploy.yml), tagged by git SHA. The box
+#     only ever pulls; this is what the forward-compat rule "images built
+#     in CI, never on the box" means in practice, and it's also already
+#     the ECS deploy model if this ever migrates there.
+#   - No bind-mounted source, no --reload/next-dev -- these are the same
+#     images CI just tested.
+#   - `caddy` replaces the ALB an ECS deployment would use: automatic
+#     Let's Encrypt TLS, terminating both api.<domain> and app.<domain>.
+#   - `mem_limit` per service -- on one shared box, a memory spike in the
+#     pandas/LLM-heavy worker must not be able to starve or OOM-kill the
+#     api container. Fargate gives every service a hard, isolated
+#     allocation for free; here it has to be set explicitly.
+#   - A bounded logging driver -- unbounded container logs filling the
+#     disk is the most common way a box like this dies.
+#
+# Two separate env files on the box, deliberately not merged into one:
+#   - .env       -- ONLY ECR_REGISTRY and IMAGE_TAG (the git SHA). Compose
+#                   reads a file named exactly `.env` for its own
+#                   ${VAR}-style substitution above (the `image:` lines).
+#                   Written/updated once per deploy by
+#                   .github/workflows/deploy.yml, and otherwise left
+#                   alone -- in particular, never touched by the SSM
+#                   secrets refresh below.
+#   - app.env    -- every app config/secret value, fetched fresh from SSM
+#                   Parameter Store by infra/ec2.tf's refresh-env.sh, and
+#                   handed to containers via each service's `env_file:`
+#                   above.
+# Keeping these separate is what lets refresh-env.sh regenerate app.env
+# wholesale (on every boot and every deploy) without wiping out the
+# currently-deployed image tag -- if both lived in one file, a boot-time
+# secrets refresh would blank IMAGE_TAG and break `docker compose pull`.
+# See infra/ec2.tf and .github/workflows/deploy.yml.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    mem_limit: 768m
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    command: celery -A app.celery_app worker --loglevel=info
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    mem_limit: 1024m
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  beat:
+    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    command: celery -A app.celery_app beat --loglevel=info
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    mem_limit: 256m
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    image: ${ECR_REGISTRY}/web:${IMAGE_TAG}
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *default-logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Caddyfile reads {$DOMAIN_NAME} from this env at startup (Caddy's own
+    # native substitution, distinct from Compose's ${...}) -- see
+    # Caddyfile's docstring.
+    env_file: app.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    logging: *default-logging
+    depends_on:
+      - api
+      - web
+
+volumes:
+  # Persists the ACME account + issued certs across restarts so a reboot
+  # or redeploy doesn't re-request from Let's Encrypt every time (which is
+  # rate-limited).
+  caddy_data:
+  caddy_config:

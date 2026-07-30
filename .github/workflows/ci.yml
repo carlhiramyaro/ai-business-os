@@ -1,0 +1,136 @@
+# Runs on every PR and on pushes to dev/main. Two independent jobs so a
+# backend-only or frontend-only change doesn't wait on the other. Neither
+# job needs real AWS or OpenAI credentials -- see the backend job's env
+# block for why. See docs/infra-guide.md's "GitHub Actions anatomy" and
+# "CI vs CD" sections.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    # Service containers: sidecar containers the runner starts alongside
+    # the job and tears down after, reachable at localhost via the mapped
+    # ports below -- the CI equivalent of docker-compose.yml's postgres/
+    # redis services.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: postgres
+      REDIS_URL: redis://localhost:6379/0
+      # Dummy values -- nothing in the test suite makes a real network call
+      # to OpenAI or S3. tests/test_uploads.py's `_patch_storage_and_db`
+      # fixture monkeypatches upload_fileobj/download_fileobj/_call_llm/
+      # generate_embedding; anything that used real credentials would be a
+      # test hitting a live external API by accident, which is exactly what
+      # agent-instructions.md's "only mock the LLM call" rule guards
+      # against missing.
+      JWT_SECRET_KEY: ci-test-secret-do-not-use-in-prod
+      S3_BUCKET_NAME: ci-unused-bucket
+      AWS_REGION: us-east-1
+      OPENAI_API_KEY: sk-ci-unused
+      ALLOWED_ORIGINS: http://localhost:3000
+      MAPPING_CONFIDENCE_THRESHOLD: "0.8"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: pip install --no-cache-dir -r requirements.txt
+
+      # tests/conftest.py:17 hardcodes the "ai_business_os_test" database
+      # name and builds its schema with Base.metadata.create_all -- which
+      # does not run `CREATE EXTENSION vector`, so the Embedding.vector
+      # column would fail to create without this step run first.
+      - name: Create test database + pgvector extension
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE ai_business_os_test"
+          psql -h localhost -U postgres -d ai_business_os_test -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: Run tests
+        working-directory: apps/api
+        run: python -m pytest
+
+      # The test suite above never runs a migration -- it builds its schema
+      # straight from the ORM models. That means a broken migration file
+      # could pass every test and only surface once it's run for real
+      # against production. This step closes that gap by applying every
+      # migration, in order, against a completely fresh database.
+      - name: Verify migrations apply cleanly
+        working-directory: apps/api
+        env:
+          POSTGRES_DB: ai_business_os_migration_check
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE ai_business_os_migration_check"
+          alembic upgrade head
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Lint
+        working-directory: apps/web
+        run: npm run lint
+
+      # NEXT_PUBLIC_API_URL is inlined at build time (see apps/web/Dockerfile's
+      # docstring) -- a placeholder is enough to prove the build succeeds;
+      # the real value is supplied per-environment by the deploy workflow.
+      - name: Build
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build

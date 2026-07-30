@@ -1,0 +1,124 @@
+# Local dev parity -- replaces CLAUDE.md's four-terminal, four-step
+# run-book (redis -> celery worker -> celery beat -> uvicorn -> next dev)
+# with `docker compose up`. Postgres now lives here too, in place of the
+# native /Library/PostgreSQL/18 install with a from-source pgvector build.
+#
+# api/worker/beat are the SAME image (apps/api/Dockerfile) with different
+# `command:`s -- see that Dockerfile's docstring for why. See
+# docs/infra-guide.md for the concepts behind every choice below.
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    # env_file (not `environment: ${VAR}`) -- Compose's ${VAR} syntax
+    # substitutes from a .env file next to *this* compose file (or the
+    # shell), not from apps/api/.env. env_file loads apps/api/.env's
+    # POSTGRES_USER/PASSWORD/DB directly into the container, which is what
+    # the official postgres image reads on first init. It also picks up a
+    # few vars (JWT_SECRET_KEY, etc.) the postgres image just ignores.
+    env_file: apps/api/.env
+    ports:
+      - "5432:5432" # exposed so a local psql/GUI client can still connect directly
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ (not $) -- a single $ would be Compose-substituted from the host
+      # side at parse time (and be blank, same bug as above). $$ escapes to
+      # a literal $, so the container's own shell expands it from the
+      # POSTGRES_USER/DB env_file already gave it.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: apps/api/.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+      # boto3's default credential chain expects real AWS credentials on
+      # disk -- mounted read-only so nothing AWS-secret-related has to move
+      # into .env, per agent-instructions.md's storage convention.
+      - ~/.aws:/home/appuser/.aws:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./apps/api
+    # No --pool=solo here -- that flag works around a macOS fork() bug that
+    # doesn't exist in this Linux container. If uploads complete without
+    # SIGSEGV under the default prefork pool, that long-standing local
+    # workaround is retired. See CLAUDE.md and docs/decisions.md.
+    command: celery -A app.celery_app worker --loglevel=info
+    env_file: apps/api/.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+      - ~/.aws:/home/appuser/.aws:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./apps/api
+    command: celery -A app.celery_app beat --loglevel=info
+    env_file: apps/api/.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      # dev stage runs `next dev` for hot reload -- the production
+      # standalone build (the Dockerfile's default final stage) is only
+      # used by docker-compose.prod.yml, pulled pre-built from ECR.
+      target: dev
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      # Anonymous volumes so the container's own Linux node_modules/.next
+      # (installed for its arch) aren't shadowed by the host's bind mount
+      # above -- otherwise a macOS-installed node_modules would leak in.
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
