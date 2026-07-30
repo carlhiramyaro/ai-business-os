@@ -40,3 +40,25 @@ def delete_embeddings_for_report(db: Session, report_id) -> None:
     section_ids = [row.id for row in db.query(ReportSection.id).filter(ReportSection.report_id == report_id)]
     source_ids = [report_id, *section_ids]
     db.query(Embedding).filter(Embedding.source_id.in_(source_ids)).delete(synchronize_session=False)
+
+
+def generate_embedding_for_fact(db: Session, business_id, fact) -> None:
+    """v0.4 slice 3 -- embeds a BusinessFact (app/business_facts.py) the
+    same polymorphic way report content is embedded, so it's retrievable by
+    chat's existing search_business_context tool (app/retrieval.py) with no
+    changes to that retrieval path."""
+    db.add(
+        Embedding(
+            business_id=business_id,
+            source_type="business_fact",
+            source_id=fact.id,
+            chunk_text=fact.content,
+            vector=generate_embedding(fact.content),
+        )
+    )
+
+
+def delete_embedding_for_fact(db: Session, fact_id) -> None:
+    db.query(Embedding).filter(Embedding.source_id == fact_id, Embedding.source_type == "business_fact").delete(
+        synchronize_session=False
+    )

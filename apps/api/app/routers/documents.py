@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_owned_business
+from app.dependencies import get_owned_business, require_worker_online
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.models import Business, DocumentExtraction, UploadSession
 from app.schemas.documents import (
@@ -55,6 +55,7 @@ def create_document(
     image: UploadFile = File(...),
     business: Business = Depends(get_owned_business),
     db: Session = Depends(get_db),
+    _worker_check: None = Depends(require_worker_online),
 ):
     if dataset_type not in VALID_DATASET_TYPES:
         raise HTTPException(

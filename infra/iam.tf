@@ -127,9 +127,20 @@ data "aws_iam_policy_document" "instance" {
   }
 
   statement {
-    sid       = "ReadDeployConfig"
-    actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-    resources = ["arn:aws:ssm:${var.aws_region}:*:parameter/ai-business-os/${var.environment}/*"]
+    sid     = "ReadDeployConfig"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    # Both forms are required -- ssm:GetParametersByPath is called with
+    # --path /ai-business-os/prod (no trailing segment), and IAM checks
+    # that exact path against the resource ARN literally, which the /*
+    # wildcard alone does NOT match (it requires at least one more path
+    # segment). GetParameter/GetParameters on individual parameters still
+    # need the wildcard form. Discovered when the box's refresh-env.sh
+    # failed deploy #1 with AccessDeniedException on exactly this action --
+    # see docs/decisions.md.
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:*:parameter/ai-business-os/${var.environment}",
+      "arn:aws:ssm:${var.aws_region}:*:parameter/ai-business-os/${var.environment}/*",
+    ]
   }
 
   statement {

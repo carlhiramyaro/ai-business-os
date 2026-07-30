@@ -2,6 +2,8 @@ from app.models.agent import AgentOutput, AgentRun
 from app.models.business import Business
 from app.models.chat import Conversation, Embedding, Message
 from app.models.entities import Customer, Supplier
+from app.models.insight import Insight
+from app.models.memory import BusinessFact
 from app.models.records import Expense, Inventory, Sale
 from app.models.report import Report, ReportSection
 from app.models.upload import ColumnMapping, DatasetProfile, DocumentExtraction, UploadSession
@@ -27,4 +29,6 @@ __all__ = [
     "Embedding",
     "AgentRun",
     "AgentOutput",
+    "Insight",
+    "BusinessFact",
 ]

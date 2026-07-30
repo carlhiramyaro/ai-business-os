@@ -6,8 +6,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Business, Conversation, Report, UploadSession, User
+from app.models import Business, BusinessFact, Conversation, Insight, Report, UploadSession, User
 from app.security import decode_access_token
+from app.worker_health import workers_online
 
 bearer_scheme = HTTPBearer()
 
@@ -80,6 +81,28 @@ def get_owned_report(
     return report
 
 
+def get_owned_insight(
+    insight_id: uuid.UUID,
+    business: Business = Depends(get_owned_business),
+    db: Session = Depends(get_db),
+) -> Insight:
+    insight = db.get(Insight, insight_id)
+    if insight is None or insight.business_id != business.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Insight not found")
+    return insight
+
+
+def get_owned_fact(
+    fact_id: uuid.UUID,
+    business: Business = Depends(get_owned_business),
+    db: Session = Depends(get_db),
+) -> BusinessFact:
+    fact = db.get(BusinessFact, fact_id)
+    if fact is None or fact.business_id != business.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fact not found")
+    return fact
+
+
 def get_owned_conversation(
     conversation_id: uuid.UUID,
     business: Business = Depends(get_owned_business),
@@ -89,3 +112,22 @@ def get_owned_conversation(
     if conversation is None or conversation.business_id != business.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return conversation
+
+
+def require_worker_online() -> None:
+    """Guards every route that hands work to Celery via `.delay(...)`.
+
+    Without a worker listening, the task sits queued in Redis forever and
+    whatever the route already created (an upload session, S3 objects, a
+    report row) hangs in PROCESSING/PENDING with no visible error -- the
+    exact "stuck upload" failure mode this guards against. Depend on this
+    before doing anything else so a down worker is caught before any
+    side effect (S3 write, row insert) happens."""
+    if not workers_online():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Background worker is not running, so this request cannot be processed. "
+                "Start it with: celery -A app.celery_app worker --pool=solo"
+            ),
+        )

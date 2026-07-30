@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.column_mapping as column_mapping
+import app.dependencies as dependencies
 import app.routers.upload as upload_router
 import app.tasks as tasks
 from app.database import get_db
@@ -372,3 +373,75 @@ def test_delete_upload_removes_children(real_client, business_id):
         assert db.get(UploadSession, upload_session_id) is None
         assert db.query(Sale).filter(Sale.upload_session_id == upload_session_id).count() == 0
         assert db.query(ColumnMapping).filter(ColumnMapping.upload_session_id == upload_session_id).count() == 0
+
+
+# Guardrail against the exact "stuck upload" incident this project has now
+# hit twice: worker never started -> task sits unconsumed in Redis -> upload
+# hangs in PROCESSING forever with no visible error. require_worker_online
+# (app/dependencies.py) should turn that into an immediate, actionable 503
+# instead. Patching app.dependencies.workers_online directly (rather than
+# Celery internals) since that's the actual seam the dependency calls through.
+
+
+def test_upload_returns_503_when_worker_offline_and_leaves_no_trace(monkeypatch, real_client, business_id):
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+    monkeypatch.setattr(dependencies, "workers_online", lambda: False)
+
+    response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    )
+
+    assert response.status_code == 503
+    assert "celery -A app.celery_app worker" in response.json()["detail"]
+    assert FAKE_S3 == {}  # the S3 write loop must not run before the guard
+    with TestSessionLocal() as db:
+        assert db.query(UploadSession).filter(UploadSession.business_id == business_id).count() == 0
+
+
+def test_confirm_column_mappings_returns_503_when_worker_offline(monkeypatch, real_client, business_id):
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Get a real session into NEEDS_REVIEW with the worker still "online"
+    # (ambiguous header forces low-confidence mapping -> NEEDS_REVIEW).
+    response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/",
+        files=_upload_files(sales=CLEAN_SALES_CSV.replace(b"Item", b"Thing")),
+        headers=headers,
+    )
+    upload_session_id = response.json()["uploadSessionId"]
+
+    monkeypatch.setattr(dependencies, "workers_online", lambda: False)
+    confirm_response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/{upload_session_id}/column-mappings/confirm", headers=headers
+    )
+
+    assert confirm_response.status_code == 503
+    with TestSessionLocal() as db:
+        session = db.get(UploadSession, upload_session_id)
+        assert session.status == "NEEDS_REVIEW"  # must not have flipped to PROCESSING
+
+
+def test_upload_succeeds_when_worker_online(real_client, business_id):
+    """Sanity check that the new dependency doesn't false-positive: eager
+    mode (task_always_eager, set session-wide in conftest.py) makes
+    workers_online() report True unconditionally, so the existing happy
+    path must be unaffected."""
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    )
+    assert response.status_code == 202
+
+
+def test_health_worker_endpoint_reflects_workers_online(monkeypatch, real_client):
+    import main
+
+    monkeypatch.setattr(main, "workers_online", lambda: False)
+    assert real_client.get("/health/worker").json() == {"status": "down", "worker": "not running"}
+
+    monkeypatch.setattr(main, "workers_online", lambda: True)
+    assert real_client.get("/health/worker").json() == {"status": "ok", "worker": "online"}

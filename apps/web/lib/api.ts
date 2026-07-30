@@ -424,3 +424,65 @@ export function confirmDocument(accessToken: string, businessId: string, session
     headers: authHeaders(accessToken),
   }).then((response) => parseJsonOrThrow<DocumentConfirmResponse>(response));
 }
+
+export type InsightSeverity = "info" | "warning" | "critical";
+
+export interface Insight {
+  id: string;
+  insightType: string;
+  severity: InsightSeverity;
+  title: string;
+  body: string;
+  metrics: Record<string, unknown>;
+  isRead: boolean;
+  periodStart: string | null;
+  periodEnd: string | null;
+  createdAt: string;
+}
+
+export function listInsights(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<Insight[]>(response));
+}
+
+export function getUnreadInsightCount(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/unread-count`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<{ unreadCount: number }>(response));
+}
+
+export function markInsightRead(accessToken: string, businessId: string, insightId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/${insightId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify({ read: true }),
+  }).then((response) => parseJsonOrThrow<Insight>(response));
+}
+
+export function runInsightsAnalysis(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/run`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<{ status: string }>(response));
+}
+
+export interface BusinessFact {
+  id: string;
+  content: string;
+  source: string;
+  createdAt: string;
+}
+
+export function listBusinessFacts(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/memory/`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<BusinessFact[]>(response));
+}
+
+export function deleteBusinessFact(accessToken: string, businessId: string, factId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/memory/${factId}`, {
+    method: "DELETE",
+    headers: authHeaders(accessToken),
+  });
+}

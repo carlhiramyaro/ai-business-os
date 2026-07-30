@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
+from app.business_facts import remember_fact
 from app.chat_tools import TOOL_SCHEMAS, ToolArgumentError, execute_tool
 from app.retrieval import retrieve_relevant_chunks
 
@@ -36,6 +37,30 @@ _SEARCH_CONTEXT_SCHEMA = {
     },
 }
 
+_REMEMBER_FACT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "remember_business_fact",
+        "description": (
+            "Save a durable fact about this business for future reference -- e.g. seasonal "
+            "patterns ('December is our peak season'), recurring supplier issues, or customer "
+            "preferences the owner mentions. Use this when the owner states something that will "
+            "still be true/useful beyond this conversation. Do NOT use it for one-off questions "
+            "or exact figures -- those come from the SQL tools and don't need remembering."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fact": {
+                    "type": "string",
+                    "description": "A concise, self-contained statement of the fact -- written so it makes sense without this conversation's context.",
+                }
+            },
+            "required": ["fact"],
+        },
+    },
+}
+
 
 @dataclass
 class ChatAnswer:
@@ -52,6 +77,9 @@ def _system_prompt(business) -> str:
         "- Every exact figure (revenue, profit, counts, rankings) MUST come from a tool "
         "result — never compute or estimate figures yourself.\n"
         "- Use search_business_context for narrative/'why' questions and past analysis.\n"
+        "- When the owner states something durable about the business that isn't just "
+        "answering your current question (a seasonal pattern, a recurring supplier issue, a "
+        "customer preference), call remember_business_fact to save it for future conversations.\n"
         "- Resolve relative dates ('this month', 'last week') into explicit date ranges "
         "using today's date.\n"
         "- If the tools return no relevant data, say so plainly rather than guessing.\n"
@@ -65,6 +93,12 @@ def _execute(db: Session, business_id: uuid.UUID, name: str, arguments: dict) ->
         if not isinstance(query, str) or not query.strip():
             raise ToolArgumentError("query must be a non-empty string")
         return {"chunks": retrieve_relevant_chunks(db, business_id, query)}
+    if name == "remember_business_fact":
+        fact = arguments.get("fact")
+        if not isinstance(fact, str) or not fact.strip():
+            raise ToolArgumentError("fact must be a non-empty string")
+        remember_fact(db, business_id, fact.strip())
+        return {"saved": True}
     return execute_tool(db, business_id, name, arguments)
 
 
@@ -77,7 +111,7 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
     made, so the API can show which queries backed the figures."""
     client = OpenAI()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    tools = [*TOOL_SCHEMAS, _SEARCH_CONTEXT_SCHEMA]
+    tools = [*TOOL_SCHEMAS, _SEARCH_CONTEXT_SCHEMA, _REMEMBER_FACT_SCHEMA]
 
     messages = [{"role": "system", "content": _system_prompt(business)}, *history, {"role": "user", "content": question}]
     executed: list[dict] = []

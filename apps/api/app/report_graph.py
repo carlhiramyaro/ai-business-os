@@ -11,6 +11,7 @@ class ReportState(TypedDict, total=False):
     inventory_metrics: dict
     marketing_metrics: dict
     operations_metrics: dict
+    forecast_metrics: dict
     finance_result: dict
     inventory_result: dict
     marketing_result: dict
@@ -51,6 +52,7 @@ def _manager_node(state: ReportState) -> dict:
         "inventory": state["inventory_result"],
         "marketing": state["marketing_result"],
         "operations": state["operations_result"],
+        "forecast": state["forecast_metrics"],
     }
     result = run_manager_agent(findings)
     completed_at = datetime.now(timezone.utc)

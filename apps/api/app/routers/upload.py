@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_owned_business, get_owned_upload_session
+from app.dependencies import get_owned_business, get_owned_upload_session, require_worker_online
 from app.models import (
     AgentOutput,
     AgentRun,
@@ -78,6 +78,7 @@ def create_upload(
     expenses: UploadFile = File(...),
     business: Business = Depends(get_owned_business),
     db: Session = Depends(get_db),
+    _worker_check: None = Depends(require_worker_online),
 ):
     upload_session = UploadSession(
         business_id=business.id,
@@ -180,6 +181,7 @@ def update_column_mapping(
 def confirm_column_mappings(
     upload_session: UploadSession = Depends(get_owned_upload_session),
     db: Session = Depends(get_db),
+    _worker_check: None = Depends(require_worker_online),
 ):
     upload_session.status = "PROCESSING"
     db.commit()

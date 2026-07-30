@@ -88,3 +88,39 @@ def test_retrieve_relevant_chunks_is_scoped_to_business(monkeypatch, db_session)
 
     results = retrieval_module.retrieve_relevant_chunks(db_session, business_a.id, "query", top_k=5)
     assert results == ["business A's data"]
+
+
+def test_retrieve_relevant_chunks_filters_by_source_types(monkeypatch, db_session):
+    """v0.4 slice 3: insight narration wants only business_fact rows, not
+    report content -- source_types=None (chat's default) stays unfiltered."""
+    business = _seed_business(db_session)
+
+    db_session.add(
+        Embedding(
+            business_id=business.id,
+            source_type="report_section",
+            source_id=uuid.uuid4(),
+            chunk_text="report content",
+            vector=make_vector(0),
+        )
+    )
+    db_session.add(
+        Embedding(
+            business_id=business.id,
+            source_type="business_fact",
+            source_id=uuid.uuid4(),
+            chunk_text="December is our peak season",
+            vector=make_vector(0),
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(retrieval_module, "generate_embedding", lambda text: make_vector(0))
+
+    unfiltered = retrieval_module.retrieve_relevant_chunks(db_session, business.id, "query", top_k=5)
+    assert set(unfiltered) == {"report content", "December is our peak season"}
+
+    filtered = retrieval_module.retrieve_relevant_chunks(
+        db_session, business.id, "query", top_k=5, source_types=["business_fact"]
+    )
+    assert filtered == ["December is our peak season"]

@@ -137,6 +137,56 @@ def test_invalid_tool_arguments_are_fed_back_not_raised(monkeypatch, db_session)
     assert "error" in json.loads(tool_messages[0]["content"])
 
 
+def test_remember_business_fact_tool_persists_fact_and_embedding(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("remember_business_fact", {"fact": "December is our peak season"})]),
+            _model_turn(content="Got it, I'll remember that."),
+        ],
+    )
+
+    result = generate_chat_answer(
+        db_session, business, "Just so you know, December is our peak season", history=[]
+    )
+
+    assert result.answer == "Got it, I'll remember that."
+    assert result.tool_calls == [
+        {"tool": "remember_business_fact", "arguments": {"fact": "December is our peak season"}}
+    ]
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    assert json.loads(tool_messages[0]["content"]) == {"saved": True}
+
+    from app.models import BusinessFact, Embedding
+
+    fact = db_session.query(BusinessFact).filter(BusinessFact.business_id == business.id).one()
+    assert fact.content == "December is our peak season"
+    assert fact.source == "chat"
+
+    embedding = db_session.query(Embedding).filter(Embedding.source_id == fact.id).one()
+    assert embedding.source_type == "business_fact"
+    assert embedding.chunk_text == "December is our peak season"
+
+
+def test_remember_business_fact_empty_fact_is_fed_back_not_raised(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("remember_business_fact", {"fact": "   "})]),
+            _model_turn(content="Understood."),
+        ],
+    )
+
+    result = generate_chat_answer(db_session, business, "Hmm", history=[])
+
+    assert result.answer == "Understood."
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    assert "error" in json.loads(tool_messages[0]["content"])
+
+
 def test_round_cap_forces_final_answer_without_tools(monkeypatch, db_session):
     business = _seed_business(db_session)
     completions = FakeCompletions([])

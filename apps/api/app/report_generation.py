@@ -5,6 +5,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.embedding_generation import generate_embeddings_for_report
+from app.forecasting import daily_revenue_points, forecast_revenue, forecast_stock_depletion, sales_velocity_by_product
 from app.models import AgentOutput, AgentRun, Business, Expense, Inventory, Report, ReportSection, Sale
 from app.report_graph import report_graph
 from app.report_metrics import (
@@ -99,12 +100,30 @@ def _populate_report(db: Session, business: Business, report: Report) -> None:
         [{"quantity": s.quantity, "discount": s.discount, "saleDate": s.sale_date} for s in sales]
     )
 
+    # Deterministic forecast inputs (roadmap.md v0.4 slice 1) -- built from
+    # the sales/inventory rows already fetched above, no new queries. The
+    # manager agent explains these numbers rather than inventing a forecast.
+    velocity = sales_velocity_by_product(
+        [{"productName": s.product_name, "quantity": s.quantity} for s in sales],
+        report.period_start,
+        report.period_end,
+    )
+    forecast_metrics = {
+        "revenue": forecast_revenue(
+            daily_revenue_points([{"saleDate": s.sale_date, "totalAmount": s.total_amount} for s in sales])
+        ),
+        "stockDepletion": forecast_stock_depletion(
+            [{"productName": i.product_name, "quantity": i.quantity} for i in inventory_rows], velocity
+        ),
+    }
+
     final_state = report_graph.invoke(
         {
             "finance_metrics": finance_metrics,
             "inventory_metrics": inventory_metrics,
             "marketing_metrics": marketing_metrics,
             "operations_metrics": operations_metrics,
+            "forecast_metrics": forecast_metrics,
         }
     )
 

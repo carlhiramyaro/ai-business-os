@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_owned_business, get_owned_report
+from app.dependencies import get_owned_business, get_owned_report, require_worker_online
 from app.embedding_generation import delete_embeddings_for_report
 from app.models import AgentOutput, AgentRun, Business, Report, ReportSection
 from app.schemas.report import ReportDetail, ReportGenerateRequest, ReportGenerateResponse, ReportSummary
@@ -47,6 +47,7 @@ def generate_report_endpoint(
     payload: ReportGenerateRequest,
     business: Business = Depends(get_owned_business),
     db: Session = Depends(get_db),
+    _worker_check: None = Depends(require_worker_online),
 ):
     if payload.period_start > payload.period_end:
         raise HTTPException(

@@ -23,6 +23,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_inactive_customers: "inactive customers",
   get_inventory_status: "inventory status",
   search_business_context: "report context",
+  remember_business_fact: "saved to memory",
 };
 
 function describeToolCalls(toolCalls: ChatToolCall[]): string {

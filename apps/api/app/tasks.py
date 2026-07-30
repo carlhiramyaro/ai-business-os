@@ -11,6 +11,7 @@ from app.column_mapping import resolve_column_mapping
 from app.database import SessionLocal
 from app.document_extraction import extract_document
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
+from app.insights_generation import run_business_analysis
 from app.models import Business, ColumnMapping, DatasetProfile, DocumentExtraction, Report, UploadSession
 from app.report_generation import generate_report, run_report_generation
 from app.storage import document_key_for, download_fileobj, key_for
@@ -249,3 +250,37 @@ def extract_document_task(upload_session_id: str, dataset_type: str, mime_type: 
         raise
     finally:
         db.close()
+
+
+@celery_app.task(name="run_business_analysis")
+def run_business_analysis_task(business_id: str):
+    """v0.4 slice 2: detect + narrate this business's insights (on-demand
+    via POST /insights/run, or scheduled -- see
+    dispatch_scheduled_analysis_task below). Errors aren't persisted onto
+    any row the way upload/report failures are (there's no in-flight
+    "analysis session" record) -- Celery's own retry/failure visibility
+    covers this task."""
+    db: Session = SessionLocal()
+    try:
+        business = db.get(Business, business_id)
+        if business is None:
+            return
+        run_business_analysis(db, business)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="dispatch_scheduled_analysis")
+def dispatch_scheduled_analysis_task():
+    """Celery beat's entry point (app/celery_app.py's beat_schedule) -- fans
+    out one run_business_analysis_task per business so each business's
+    analysis is isolated and independently retryable, rather than one giant
+    task looping over every business inline."""
+    db: Session = SessionLocal()
+    try:
+        business_ids = [row.id for row in db.query(Business.id).all()]
+    finally:
+        db.close()
+
+    for business_id in business_ids:
+        run_business_analysis_task.delay(str(business_id))
