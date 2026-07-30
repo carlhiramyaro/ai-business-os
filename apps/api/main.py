@@ -1,16 +1,26 @@
 import os
+import uuid
 
+import structlog
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.logging_config import configure_logging
 from app.routers import auth, business, chat, documents, entities, entries, insights, memory, report, upload
 from app.worker_health import workers_online
 
 load_dotenv()
+
+# Before anything else -- including `app = FastAPI()` -- so every log line
+# from here on, including FastAPI/uvicorn's own, goes through structlog.
+# See app/logging_config.py.
+configure_logging("api")
+logger = structlog.get_logger(__name__)
 
 app = FastAPI()
 
@@ -27,6 +37,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """Binds a request_id to every log line emitted while handling this
+    request (via structlog's contextvars, which the JSON renderer picks up
+    automatically -- see app/logging_config.py) and echoes it back on the
+    response, so a tester/support conversation can quote an ID that's
+    directly greppable in CloudWatch. Accepts an inbound X-Request-ID so a
+    request can be traced across services that set their own.
+
+    Catches unhandled exceptions here directly rather than relying on a
+    separate @app.exception_handler(Exception): with BaseHTTPMiddleware
+    (what @app.middleware("http") is) anywhere in the stack, an exception
+    raised by a route handler propagates out of call_next() itself rather
+    than being converted to a response by ExceptionMiddleware first --
+    confirmed against this FastAPI/Starlette version via
+    tests/test_logging.py. HTTPException (every deliberate 4xx raised
+    throughout app/routers/) is unaffected -- FastAPI's default handler for
+    it still runs inside call_next() and returns normally."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    try:
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.error("unhandled_exception", error=str(exc), exc_info=True)
+            response = JSONResponse(
+                status_code=500, content={"detail": "Internal server error", "requestId": request_id}
+            )
+    finally:
+        structlog.contextvars.clear_contextvars()
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 
 app.include_router(auth.router)
 app.include_router(business.router)

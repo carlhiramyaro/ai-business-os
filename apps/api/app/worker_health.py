@@ -9,7 +9,11 @@ shop" upload (see docs/decisions.md). This module lets routes fail fast
 instead.
 """
 
+import structlog
+
 from app.celery_app import celery_app
+
+logger = structlog.get_logger(__name__)
 
 
 def workers_online(timeout: float = 0.5) -> bool:
@@ -25,6 +29,11 @@ def workers_online(timeout: float = 0.5) -> bool:
         return True
     try:
         replies = celery_app.control.ping(timeout=timeout)
-    except Exception:
+    except Exception as exc:
+        # Behavior unchanged (still reports "down") -- but a broker outage
+        # used to be indistinguishable from "no worker running" with zero
+        # trace of the real cause, and this is the first thing anyone
+        # checks during an incident. See docs/decisions.md.
+        logger.warning("worker_ping_failed", error=str(exc), exc_info=True)
         return False
     return bool(replies)

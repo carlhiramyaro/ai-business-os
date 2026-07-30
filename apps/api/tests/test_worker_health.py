@@ -1,3 +1,5 @@
+from structlog.testing import capture_logs
+
 from app.celery_app import celery_app
 from app.worker_health import workers_online
 
@@ -22,10 +24,21 @@ def test_workers_online_reflects_ping_replies_when_not_eager(monkeypatch):
 
 
 def test_workers_online_false_on_broker_error(monkeypatch):
+    """Behavior unchanged (still reports down) -- but this used to be a
+    bare `except Exception: return False` with zero trace of the real
+    cause, misdiagnosing a broker outage as "worker offline". Now it logs
+    the actual reason. See docs/decisions.md."""
     monkeypatch.setattr(celery_app.conf, "task_always_eager", False)
 
     def _raise(timeout=0.5):
         raise ConnectionError("no broker")
 
     monkeypatch.setattr(celery_app.control, "ping", _raise)
-    assert workers_online() is False
+
+    with capture_logs() as logs:
+        assert workers_online() is False
+
+    assert any(
+        entry["event"] == "worker_ping_failed" and entry["error"] == "no broker" and entry["log_level"] == "warning"
+        for entry in logs
+    )
