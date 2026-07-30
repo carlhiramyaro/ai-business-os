@@ -8,14 +8,37 @@ def test_init_observability_is_noop_with_no_dsn(monkeypatch):
     sentry_sdk.init a true no-op -- no exception, and no transport
     constructed to actually send anything. (Client.is_active() is not the
     right check here -- it's hardcoded to always return True as of
-    sentry-sdk 2.x; dsn/transport being None is the real signal.)"""
+    sentry-sdk 2.x; dsn/transport being falsy is the real signal. dsn is ""
+    rather than None -- see the next test's docstring for why that
+    distinction matters.)"""
     monkeypatch.setattr(observability, "_initialized", False)
     monkeypatch.delenv("SENTRY_DSN", raising=False)
 
     observability.init_observability("test")
 
     client = sentry_sdk.get_client()
-    assert client.dsn is None
+    assert not client.dsn
+    assert client.transport is None
+
+
+def test_init_observability_is_noop_with_placeholder_dsn(monkeypatch):
+    """Regression test for a real production incident: infra/ssm.tf seeds
+    SENTRY_DSN with the literal string REPLACE_ME_MANUALLY until it's
+    replaced by hand, and that value is always present as a real env var in
+    app.env on the box -- unlike the "unset" case above. Passing dsn=None
+    to sentry_sdk.init does NOT disable it here, because sentry_sdk's own
+    _get_options() re-reads os.environ["SENTRY_DSN"] itself whenever the
+    dsn kwarg is exactly None (sentry_sdk/client.py), silently overriding
+    app-level gating and crashing with BadDsn since the placeholder isn't a
+    valid DSN URL. This crashed the production api container. The fix
+    passes "" instead of None so that fallback never triggers."""
+    monkeypatch.setattr(observability, "_initialized", False)
+    monkeypatch.setenv("SENTRY_DSN", "REPLACE_ME_MANUALLY")
+
+    observability.init_observability("test")
+
+    client = sentry_sdk.get_client()
+    assert not client.dsn
     assert client.transport is None
 
 
