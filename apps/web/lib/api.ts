@@ -90,12 +90,12 @@ export interface UploadCreateResponse {
 export function createUpload(
   accessToken: string,
   businessId: string,
-  files: { sales: File; inventory: File; expenses: File }
+  files: { sales?: File; inventory?: File; expenses?: File }
 ) {
   const formData = new FormData();
-  formData.append("sales", files.sales);
-  formData.append("inventory", files.inventory);
-  formData.append("expenses", files.expenses);
+  if (files.sales) formData.append("sales", files.sales);
+  if (files.inventory) formData.append("inventory", files.inventory);
+  if (files.expenses) formData.append("expenses", files.expenses);
 
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/uploads/`, {
     method: "POST",

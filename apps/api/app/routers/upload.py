@@ -73,24 +73,31 @@ def _cascade_delete_upload_session(db: Session, upload_session: UploadSession) -
 
 @router.post("/", response_model=UploadCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_upload(
-    sales: UploadFile = File(...),
-    inventory: UploadFile = File(...),
-    expenses: UploadFile = File(...),
+    sales: UploadFile | None = File(None),
+    inventory: UploadFile | None = File(None),
+    expenses: UploadFile | None = File(None),
     business: Business = Depends(get_owned_business),
     db: Session = Depends(get_db),
     _worker_check: None = Depends(require_worker_online),
 ):
-    upload_session = UploadSession(
-        business_id=business.id,
-        sales_file_url="",
-        inventory_file_url="",
-        expenses_file_url="",
-        status="PROCESSING",
-    )
+    if sales is None and inventory is None and expenses is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of sales, inventory, or expenses must be provided",
+        )
+
+    upload_session = UploadSession(business_id=business.id, status="PROCESSING")
     db.add(upload_session)
     db.flush()  # assigns upload_session.id (default=uuid.uuid4) before we build S3 keys
 
+    # *_file_url stays null (nullable=True -- see app/models/upload.py) for
+    # any dataset not provided; run_column_mapping_task/finalize_upload_task
+    # both derive which dataset_types to process from these, so a
+    # sales-only or inventory-only upload naturally skips the rest rather
+    # than needing a separate "which datasets were included" signal.
     for dataset_type, upload_file in (("sales", sales), ("inventory", inventory), ("expenses", expenses)):
+        if upload_file is None:
+            continue
         key = key_for(business.id, upload_session.id, dataset_type)
         url = upload_fileobj(upload_file.file, key)
         setattr(upload_session, f"{dataset_type}_file_url", url)

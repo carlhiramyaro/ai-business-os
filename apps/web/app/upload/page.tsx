@@ -109,13 +109,13 @@ export default function UploadPage() {
 
   async function handleUpload(event: React.FormEvent) {
     event.preventDefault();
-    if (!accessToken || !businessId || !salesFile || !inventoryFile || !expensesFile) return;
+    if (!accessToken || !businessId || (!salesFile && !inventoryFile && !expensesFile)) return;
     setError(null);
     try {
       const created = await createUpload(accessToken, businessId, {
-        sales: salesFile,
-        inventory: inventoryFile,
-        expenses: expensesFile,
+        sales: salesFile ?? undefined,
+        inventory: inventoryFile ?? undefined,
+        expenses: expensesFile ?? undefined,
       });
       setUploadSessionId(created.uploadSessionId);
       setStatus({ status: "PROCESSING", progress: 50, pendingReview: null, duplicateWarning: false });
@@ -190,7 +190,7 @@ export default function UploadPage() {
             <FileField label="sales.csv" onChange={setSalesFile} />
             <FileField label="inventory.csv" onChange={setInventoryFile} />
             <FileField label="expenses.csv" onChange={setExpensesFile} />
-            <Button type="submit" disabled={!salesFile || !inventoryFile || !expensesFile}>
+            <Button type="submit" disabled={!salesFile && !inventoryFile && !expensesFile}>
               Upload
             </Button>
           </form>

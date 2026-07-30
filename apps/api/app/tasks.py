@@ -32,6 +32,15 @@ def _mark_failed(db: Session, upload_session: UploadSession) -> None:
     db.commit()
 
 
+def _provided_dataset_types(upload_session: UploadSession) -> list[str]:
+    """Which of sales/inventory/expenses were actually uploaded for this
+    session -- derived from the nullable *_file_url columns rather than
+    assuming all three, so a sales-only (or any partial) upload only
+    column-maps/ingests/profiles the datasets that exist. See
+    app/routers/upload.py's create_upload."""
+    return [dt for dt in ("sales", "inventory", "expenses") if getattr(upload_session, f"{dt}_file_url")]
+
+
 @celery_app.task(name="run_column_mapping")
 def run_column_mapping_task(upload_session_id: str):
     db: Session = SessionLocal()
@@ -46,7 +55,7 @@ def run_column_mapping_task(upload_session_id: str):
 
         any_needs_review = False
 
-        for dataset_type in ("sales", "inventory", "expenses"):
+        for dataset_type in _provided_dataset_types(upload_session):
             key = key_for(upload_session.business_id, upload_session.id, dataset_type)
             df = pd.read_csv(download_fileobj(key))
             header_hash = _header_set_hash(df.columns)
@@ -100,7 +109,7 @@ def finalize_upload_task(upload_session_id: str):
 
         period_start = period_end = None
 
-        for dataset_type in ("sales", "inventory", "expenses"):
+        for dataset_type in _provided_dataset_types(upload_session):
             key = key_for(upload_session.business_id, upload_session.id, dataset_type)
             df = pd.read_csv(download_fileobj(key))
 

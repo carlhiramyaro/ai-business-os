@@ -197,6 +197,48 @@ def test_upload_with_clean_headers_completes_synchronously(real_client, business
     assert all(m["mappingMethod"] == "heuristic" and m["confidenceScore"] == 1.0 for m in mappings)
 
 
+def test_upload_with_only_inventory_completes(real_client, business_id):
+    """sales/inventory/expenses are all optional -- a shop owner with just
+    one CSV shouldn't be blocked. Only the provided dataset gets
+    column-mapped, ingested, and profiled; the other two are untouched."""
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/",
+        files={"inventory": ("inventory.csv", io.BytesIO(CLEAN_INVENTORY_CSV), "text/csv")},
+        headers=headers,
+    )
+    assert response.status_code == 202
+    upload_session_id = response.json()["uploadSessionId"]
+
+    status_response = real_client.get(
+        f"/api/v1/businesses/{business_id}/uploads/{upload_session_id}", headers=headers
+    )
+    assert status_response.json()["status"] == "COMPLETED"
+
+    with TestSessionLocal() as db:
+        assert db.query(Inventory).filter(Inventory.upload_session_id == upload_session_id).count() == 1
+        assert db.query(Sale).filter(Sale.upload_session_id == upload_session_id).count() == 0
+        assert db.query(Expense).filter(Expense.upload_session_id == upload_session_id).count() == 0
+
+        profiles = db.query(DatasetProfile).filter(DatasetProfile.upload_session_id == upload_session_id).all()
+        assert {p.dataset_type for p in profiles} == {"inventory"}
+
+        mappings = real_client.get(
+            f"/api/v1/businesses/{business_id}/uploads/{upload_session_id}/column-mappings", headers=headers
+        ).json()
+        assert {m["datasetType"] for m in mappings} == {"inventory"}
+
+
+def test_upload_requires_at_least_one_file(real_client, business_id):
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = real_client.post(f"/api/v1/businesses/{business_id}/uploads/", files={}, headers=headers)
+    assert response.status_code == 400
+
+
 def test_upload_with_ambiguous_header_needs_review_then_resumes(monkeypatch, real_client, business_id):
     business_id, token = business_id
     headers = {"Authorization": f"Bearer {token}"}
