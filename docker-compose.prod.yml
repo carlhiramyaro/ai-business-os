@@ -63,7 +63,7 @@ services:
       retries: 10
 
   api:
-    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    image: ${ECR_REGISTRY}/ai-business-os/api:${IMAGE_TAG}
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     env_file: app.env
@@ -76,7 +76,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    image: ${ECR_REGISTRY}/ai-business-os/api:${IMAGE_TAG}
     command: celery -A app.celery_app worker --loglevel=info
     restart: unless-stopped
     env_file: app.env
@@ -89,7 +89,7 @@ services:
         condition: service_healthy
 
   beat:
-    image: ${ECR_REGISTRY}/api:${IMAGE_TAG}
+    image: ${ECR_REGISTRY}/ai-business-os/api:${IMAGE_TAG}
     command: celery -A app.celery_app beat --loglevel=info
     restart: unless-stopped
     env_file: app.env
@@ -102,7 +102,7 @@ services:
         condition: service_healthy
 
   web:
-    image: ${ECR_REGISTRY}/web:${IMAGE_TAG}
+    image: ${ECR_REGISTRY}/ai-business-os/web:${IMAGE_TAG}
     restart: unless-stopped
     mem_limit: 512m
     logging: *default-logging
