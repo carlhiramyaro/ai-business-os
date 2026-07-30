@@ -34,10 +34,13 @@ output "next_steps" {
     1. Set the real OpenAI key (Terraform intentionally leaves a placeholder):
        aws ssm put-parameter --name ${local.ssm_path}/OPENAI_API_KEY \
          --type SecureString --value sk-... --overwrite --region ${var.aws_region}
-    2. If the domain is registered outside Route 53, delegate it to the
+    2. Same for Sentry, once you've created a project and have a DSN:
+       aws ssm put-parameter --name ${local.ssm_path}/SENTRY_DSN \
+         --type SecureString --value https://...@....ingest.sentry.io/... --overwrite --region ${var.aws_region}
+    3. If the domain is registered outside Route 53, delegate it to the
        name servers in the `route53_name_servers` output above.
-    3. Add `github_actions_role_arn`'s value to .github/workflows/deploy.yml.
-    4. Push to main to run the first real deploy -- it overwrites the
+    4. Add `github_actions_role_arn`'s value to .github/workflows/deploy.yml.
+    5. Push to main to run the first real deploy -- it overwrites the
        bootstrap image tag on the box and brings the stack up for real.
   EOT
 }

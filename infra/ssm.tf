@@ -109,6 +109,18 @@ resource "aws_ssm_parameter" "mapping_confidence_threshold" {
 # it's set by hand:
 #   aws ssm put-parameter --name /ai-business-os/prod/OPENAI_API_KEY \
 #     --type SecureString --value sk-... --overwrite
+resource "aws_ssm_parameter" "environment" {
+  name  = "${local.ssm_path}/ENVIRONMENT"
+  type  = "String"
+  value = var.environment
+}
+
+resource "aws_ssm_parameter" "log_level" {
+  name  = "${local.ssm_path}/LOG_LEVEL"
+  type  = "String"
+  value = "INFO"
+}
+
 resource "aws_ssm_parameter" "openai_api_key" {
   name  = "${local.ssm_path}/OPENAI_API_KEY"
   type  = "SecureString"
@@ -117,4 +129,30 @@ resource "aws_ssm_parameter" "openai_api_key" {
   lifecycle {
     ignore_changes = [value]
   }
+}
+
+# Same placeholder pattern as OPENAI_API_KEY above -- create a Sentry
+# project and set the real value once you have one:
+#   aws ssm put-parameter --name /ai-business-os/prod/SENTRY_DSN \
+#     --type SecureString --value https://...@....ingest.sentry.io/... --overwrite
+resource "aws_ssm_parameter" "sentry_dsn" {
+  name  = "${local.ssm_path}/SENTRY_DSN"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "sentry_environment" {
+  name  = "${local.ssm_path}/SENTRY_ENVIRONMENT"
+  type  = "String"
+  value = var.environment
+}
+
+resource "aws_ssm_parameter" "sentry_traces_sample_rate" {
+  name  = "${local.ssm_path}/SENTRY_TRACES_SAMPLE_RATE"
+  type  = "String"
+  value = "0.0"
 }

@@ -6,6 +6,7 @@ from celery.signals import beat_init, task_failure, task_postrun, task_prerun, w
 from dotenv import load_dotenv
 
 from app.logging_config import configure_logging
+from app.observability import init_observability
 
 load_dotenv()
 
@@ -31,13 +32,15 @@ _logger = structlog.get_logger(__name__)
 # processor, added in a later commit) don't survive Celery's fork(). See
 # docs/infra-guide.md.
 @worker_process_init.connect
-def _init_worker_logging(**kwargs):
+def _init_worker_observability(**kwargs):
     configure_logging("worker")
+    init_observability("worker")
 
 
 @beat_init.connect
-def _init_beat_logging(**kwargs):
+def _init_beat_observability(**kwargs):
     configure_logging("beat")
+    init_observability("beat")
 
 
 @task_prerun.connect

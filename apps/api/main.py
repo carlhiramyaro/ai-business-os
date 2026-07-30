@@ -11,15 +11,19 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.logging_config import configure_logging
+from app.observability import init_observability
 from app.routers import auth, business, chat, documents, entities, entries, insights, memory, report, upload
 from app.worker_health import workers_online
 
 load_dotenv()
 
 # Before anything else -- including `app = FastAPI()` -- so every log line
-# from here on, including FastAPI/uvicorn's own, goes through structlog.
-# See app/logging_config.py.
+# from here on, including FastAPI/uvicorn's own, goes through structlog,
+# and Sentry's FastAPI auto-instrumentation is in place before the app
+# object it instruments is created. See app/logging_config.py,
+# app/observability.py.
 configure_logging("api")
+init_observability("api")
 logger = structlog.get_logger(__name__)
 
 app = FastAPI()
