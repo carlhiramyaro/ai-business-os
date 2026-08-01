@@ -503,7 +503,7 @@ function PhotoForm({ accessToken, businessId }: { accessToken: string; businessI
               capture="environment"
               disabled={uploading}
               onChange={(e) => handleFileSelected(e.target.files?.[0] ?? null)}
-              className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
+              className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-3 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
             />
           </Field>
           {uploading && <p className="text-sm text-muted">Uploading…</p>}

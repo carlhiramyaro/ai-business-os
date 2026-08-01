@@ -74,7 +74,7 @@ export function NavBar() {
             ) : (
               <Link
                 href="/login"
-                className="rounded-md bg-brand px-3 py-1.5 font-medium text-brand-foreground hover:bg-brand-hover"
+                className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-3 font-medium text-brand-foreground hover:bg-brand-hover"
               >
                 Log in
               </Link>
@@ -86,7 +86,7 @@ export function NavBar() {
         {!loading && !user && (
           <Link
             href="/login"
-            className="rounded-md bg-brand px-3 py-1.5 font-medium text-brand-foreground hover:bg-brand-hover md:hidden"
+            className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-3 font-medium text-brand-foreground hover:bg-brand-hover md:hidden"
           >
             Log in
           </Link>

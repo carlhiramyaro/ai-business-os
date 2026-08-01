@@ -18,8 +18,15 @@ services:
     env_file: apps/api/.env
     ports:
       - "5432:5432" # exposed so a local psql/GUI client can still connect directly
+    # /var/lib/postgresql (not .../data) -- the postgres 18+ image expects
+    # a single mount at the parent dir and manages the major-version-
+    # specific subdirectory itself (pg_ctlcluster-compatible layout); a
+    # mount at .../data hits the image's own guard against the pre-18
+    # layout and refuses to start, even on a fresh volume. See
+    # https://github.com/docker-library/postgres/pull/1259 and
+    # docs/decisions.md [mobile-first polish].
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       # $$ (not $) -- a single $ would be Compose-substituted from the host
       # side at parse time (and be blank, same bug as above). $$ escapes to

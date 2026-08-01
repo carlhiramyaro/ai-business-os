@@ -293,7 +293,7 @@ function FileField({ label, onChange }: { label: string; onChange: (file: File |
         type="file"
         accept=".csv"
         onChange={(event) => onChange(event.target.files?.[0] ?? null)}
-        className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
+        className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-3 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
       />
     </label>
   );
