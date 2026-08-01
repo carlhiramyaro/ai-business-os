@@ -134,7 +134,7 @@ export default function InsightsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-2xl font-semibold text-foreground">Insights</h1>
         {unreadCount > 0 && <Badge tone="danger">{unreadCount} unread</Badge>}
       </div>
@@ -149,8 +149,8 @@ export default function InsightsPage() {
       </Card>
 
       {businessId && (
-        <div className="flex justify-end">
-          <Button onClick={handleRunAnalysis} disabled={running}>
+        <div className="flex sm:justify-end">
+          <Button onClick={handleRunAnalysis} disabled={running} className="w-full sm:w-auto">
             {running ? "Analyzing…" : "Run analysis now"}
           </Button>
         </div>
@@ -168,14 +168,18 @@ export default function InsightsPage() {
           {insights.map((insight) => (
             <Card
               key={insight.id}
-              className={`flex cursor-pointer flex-col gap-2 ${insight.isRead ? "" : "border-brand/40"}`}
+              className={`flex cursor-pointer flex-col gap-2 active:bg-background ${insight.isRead ? "" : "border-brand/40"}`}
               onClick={() => handleOpenInsight(insight)}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className={`text-sm ${insight.isRead ? "font-normal" : "font-semibold"} text-foreground`}>
+                <span
+                  className={`min-w-0 text-sm ${insight.isRead ? "font-normal" : "font-semibold"} text-foreground`}
+                >
                   {insight.title}
                 </span>
-                <Badge tone={SEVERITY_TONE[insight.severity]}>{insight.severity}</Badge>
+                <Badge tone={SEVERITY_TONE[insight.severity]} className="shrink-0">
+                  {insight.severity}
+                </Badge>
               </div>
               <p className="text-sm text-muted">{insight.body}</p>
               <span className="text-xs text-muted">{new Date(insight.createdAt).toLocaleString()}</span>
