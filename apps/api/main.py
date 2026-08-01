@@ -120,12 +120,3 @@ def worker_health():
     inspected by hand. See app/worker_health.py."""
     online = workers_online()
     return {"status": "ok" if online else "down", "worker": "online" if online else "not running"}
-
-
-@app.get("/debug/observability-drill")
-def observability_drill():
-    """TEMPORARY -- v0.5 slice 2's production timed drill (docs/decisions.md
-    [2026-08-01]): deliberately raises an unhandled exception to verify the
-    request-ID/CloudWatch/Sentry pipeline end to end. Removed in the very
-    next commit after the drill confirms it."""
-    1 / 0
