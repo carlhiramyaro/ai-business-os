@@ -497,3 +497,71 @@ def test_health_worker_endpoint_reflects_workers_online(monkeypatch, real_client
 
     monkeypatch.setattr(main, "workers_online", lambda: True)
     assert real_client.get("/health/worker").json() == {"status": "ok", "worker": "online"}
+
+
+# v0.5 slice 3 (multi-tenant hardening): this module was the one router
+# confirmed missing 403/ownership regression coverage during the businessId
+# audit -- every other router already has it. See docs/decisions.md.
+
+_FAKE_ID = "00000000-0000-0000-0000-000000000000"
+
+# (method, path template) -- get_owned_business runs before any of these
+# routes ever looks at upload_session_id/mapping_id, so a fixed placeholder
+# id is enough: ownership on the business itself is what's under test here.
+_UPLOAD_ROUTES_UNDER_BUSINESS = [
+    ("POST", "/api/v1/businesses/{business_id}/uploads/"),
+    ("GET", "/api/v1/businesses/{business_id}/uploads/"),
+    ("GET", f"/api/v1/businesses/{{business_id}}/uploads/{_FAKE_ID}"),
+    ("DELETE", f"/api/v1/businesses/{{business_id}}/uploads/{_FAKE_ID}"),
+    ("GET", f"/api/v1/businesses/{{business_id}}/uploads/{_FAKE_ID}/column-mappings"),
+    ("PATCH", f"/api/v1/businesses/{{business_id}}/uploads/{_FAKE_ID}/column-mappings/{_FAKE_ID}"),
+    ("POST", f"/api/v1/businesses/{{business_id}}/uploads/{_FAKE_ID}/column-mappings/confirm"),
+]
+
+
+@pytest.mark.parametrize("method,path_template", _UPLOAD_ROUTES_UNDER_BUSINESS)
+def test_upload_routes_forbidden_for_non_owner(real_client, business_id, method, path_template):
+    business_id, _owner_token = business_id
+    with TestSessionLocal() as db:
+        intruder = User(
+            full_name="Intruder",
+            email=f"{uuid.uuid4()}@example.com",
+            password_hash=hash_password("password123"),
+        )
+        db.add(intruder)
+        db.commit()
+        intruder_token = create_access_token(str(intruder.id))
+
+    path = path_template.format(business_id=business_id)
+    response = real_client.request(method, path, headers={"Authorization": f"Bearer {intruder_token}"})
+    assert response.status_code == 403
+
+
+def test_column_mapping_from_another_upload_session_is_rejected(real_client, business_id):
+    """The one place in the codebase that fetches a child row by a raw id
+    (mapping_id) and checks the parent relationship afterward, rather than
+    via a get_owned_* dependency (app/routers/upload.py's
+    update_column_mapping) -- the exact pattern that would silently break
+    if copied elsewhere. Two sessions under the SAME business isolates the
+    variable: this must 404 because the mapping belongs to a different
+    upload session, not because of a cross-business ownership check."""
+    business_id, token = business_id
+    headers = {"Authorization": f"Bearer {token}"}
+
+    session_a = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    ).json()["uploadSessionId"]
+    session_b = real_client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files=_upload_files(), headers=headers
+    ).json()["uploadSessionId"]
+
+    mapping_from_b = real_client.get(
+        f"/api/v1/businesses/{business_id}/uploads/{session_b}/column-mappings", headers=headers
+    ).json()[0]
+
+    response = real_client.patch(
+        f"/api/v1/businesses/{business_id}/uploads/{session_a}/column-mappings/{mapping_from_b['id']}",
+        json={"targetField": "productName"},
+        headers=headers,
+    )
+    assert response.status_code == 404

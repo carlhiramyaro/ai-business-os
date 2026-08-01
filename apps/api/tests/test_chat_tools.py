@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -5,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from app.chat_tools import (
+    TOOL_SCHEMAS,
     ToolArgumentError,
     execute_tool,
     get_financial_summary,
@@ -189,17 +191,47 @@ def test_inventory_status_flags_low_stock(db_session):
     assert result["lowStockItems"] == [{"productName": "Rice", "quantity": 2, "reorderLevel": 5}]
 
 
-def test_tools_are_scoped_to_business(db_session):
+# v0.5 slice 3 (multi-tenant hardening): parametrized over every entry in
+# TOOL_SCHEMAS -- the model-facing tool catalog -- rather than a hand-picked
+# subset, so a future tool added to the catalog is automatically covered by
+# this leakage check instead of needing a manual addition (the same
+# "invariant, not a snapshot" reasoning as test_tenant_isolation.py).
+_LEAK_MARKERS = ("Yaw", "SecretProduct", 999.0)
+
+
+@pytest.mark.parametrize("tool_name", [schema["function"]["name"] for schema in TOOL_SCHEMAS])
+def test_tools_are_scoped_to_business(db_session, tool_name):
     business_a, upload_a = _seed_business(db_session)
     business_b, upload_b = _seed_business(db_session)
-    _add_sale(db_session, business_a, upload_a, 1, customer_name="Ama", total_amount=Decimal("100.00"))
-    _add_sale(db_session, business_b, upload_b, 1, customer_name="Yaw", total_amount=Decimal("999.00"))
+    _add_sale(db_session, business_a, upload_a, 1, customer_name="Ama", product_name="Rice", total_amount=Decimal("100.00"))
+    _add_sale(
+        db_session,
+        business_b,
+        upload_b,
+        1,
+        customer_name="Yaw",
+        product_name="SecretProduct",
+        total_amount=Decimal("999.00"),
+    )
+    db_session.add(
+        Inventory(
+            business_id=business_b.id,
+            upload_session_id=upload_b.id,
+            product_name="SecretProduct",
+            quantity=1,
+            reorder_level=5,
+            cost_price=Decimal("999.00"),
+        )
+    )
     db_session.flush()
 
-    summary = get_financial_summary(db_session, business_a.id)
-    assert summary["totalRevenue"] == 100.0
-    customers = get_top_customers(db_session, business_a.id)
-    assert [c["customerName"] for c in customers["customers"]] == ["Ama"]
+    result = execute_tool(db_session, business_a.id, tool_name, {})
+    serialized = json.dumps(result)
+    for marker in _LEAK_MARKERS:
+        assert str(marker) not in serialized, (
+            f"{tool_name} scoped to business_a leaked business_b's data "
+            f"(found {marker!r} in the result): {serialized}"
+        )
 
 
 def test_execute_tool_dispatches_and_validates(db_session):
