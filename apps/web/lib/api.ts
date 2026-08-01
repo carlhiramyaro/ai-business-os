@@ -46,6 +46,20 @@ export function loginUser(email: string, password: string) {
   }).then((response) => parseJsonOrThrow<TokenResponse>(response));
 }
 
+// Refresh tokens are single-use with rotation (the backend deletes the
+// presented one and issues a brand-new access/refresh pair on every call,
+// see docs/decisions.md) -- callers must persist BOTH tokens from the
+// response, not just the new access token, or the next refresh attempt
+// fails on an already-consumed refresh token. See lib/auth-context.tsx's
+// proactive refresh loop, the actual caller.
+export function refreshAccessToken(refreshToken: string) {
+  return fetch(`${API_URL}/api/v1/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
+  }).then((response) => parseJsonOrThrow<TokenResponse>(response));
+}
+
 export function getCurrentUser(accessToken: string) {
   return fetch(`${API_URL}/api/v1/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
