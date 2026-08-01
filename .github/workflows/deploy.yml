@@ -19,7 +19,7 @@ env:
   # `instance_id`, filled in after the first `terraform apply`.
   AWS_ROLE_ARN: arn:aws:iam::257394455722:role/ai-business-os-prod-github-deploy
   ECR_REGISTRY: 257394455722.dkr.ecr.us-east-1.amazonaws.com
-  INSTANCE_ID: i-03b86bfdfc31aac71
+  INSTANCE_ID: i-0b9fc03ba386ec32f
   # Domain's api subdomain -- must match infra/variables.tf's domain_name.
   API_URL: https://api.iamledger.app
 
