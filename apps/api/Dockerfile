@@ -4,6 +4,17 @@
 # at run time is the role. See docs/infra-guide.md.
 FROM python:3.13-slim
 
+# Python block-buffers stdout by default whenever it isn't a TTY, which is
+# always true inside a container. uvicorn's own access-log volume masks
+# this for the api service, but the Celery worker's prefork children sit
+# idle between tasks and can leave a single structlog JSON line (e.g. a
+# task_failed entry) stuck in an unflushed buffer indefinitely -- observed
+# for real during the v0.5 slice 2 production drill: a task that failed
+# with a clear traceback in Celery's own result backend produced zero
+# corresponding output in `docker logs` or CloudWatch, for over 7 minutes.
+# See docs/decisions.md.
+ENV PYTHONUNBUFFERED=1
+
 # psycopg2-binary and pandas both ship prebuilt wheels for this base image,
 # so no compiler toolchain is needed here -- keep it that way; adding
 # build-essential "to fix a wheel" is usually a sign the wrong wheel/arch
