@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 
 type EntryType = "sale" | "expense" | "inventory" | "photo";
 
@@ -475,26 +476,32 @@ function PhotoForm({ accessToken, businessId }: { accessToken: string; businessI
       {!sessionId && (
         <>
           <Field label="What does this photo show?">
-            <select
-              className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-brand/40"
-              value={datasetType}
-              onChange={(e) => setDatasetType(e.target.value)}
-            >
+            <Select value={datasetType} onChange={(e) => setDatasetType(e.target.value)}>
               {DATASET_TYPE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           <Field label="Photo">
+            {/* capture="environment" hands off to the OS camera app on
+                mobile (with a normal file-picker fallback on desktop) --
+                expected to be unaffected by next.config.ts's
+                Permissions-Policy camera=() header since this never
+                calls getUserMedia(), but that needs a real-device check
+                (Commit 10) before treating it as confirmed -- see
+                docs/decisions.md [mobile-first polish]. w-full: native
+                file inputs size to their content, so a long filename on
+                a narrow phone screen can force horizontal page scroll
+                without this. */}
             <input
               type="file"
               accept="image/*"
               capture="environment"
               disabled={uploading}
               onChange={(e) => handleFileSelected(e.target.files?.[0] ?? null)}
-              className="text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
+              className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
             />
           </Field>
           {uploading && <p className="text-sm text-muted">Uploading…</p>}

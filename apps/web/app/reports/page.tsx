@@ -15,6 +15,7 @@ import { BusinessPicker } from "@/components/BusinessPicker";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -169,22 +170,22 @@ export default function ReportsPage() {
             <div className="flex items-end gap-3">
               <label className="flex flex-col gap-1 text-sm">
                 <span className="text-muted">From</span>
-                <input
+                <Input
                   type="date"
                   value={periodStart}
                   max={periodEnd || undefined}
                   onChange={(event) => setPeriodStart(event.target.value)}
-                  className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+                  className="py-1.5"
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm">
                 <span className="text-muted">To</span>
-                <input
+                <Input
                   type="date"
                   value={periodEnd}
                   min={periodStart || undefined}
                   onChange={(event) => setPeriodEnd(event.target.value)}
-                  className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+                  className="py-1.5"
                 />
               </label>
               <Button type="submit" disabled={!periodStart || !periodEnd || generatingReportId !== null}>

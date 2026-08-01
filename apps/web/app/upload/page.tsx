@@ -20,6 +20,7 @@ import { BusinessPicker } from "@/components/BusinessPicker";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Select } from "@/components/ui/Select";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -225,8 +226,8 @@ export default function UploadPage() {
                       &quot; (confidence {mapping.confidenceScore}, {mapping.mappingMethod})
                     </p>
                     <p className="mt-1 text-muted">Sample values: {mapping.sampleValues?.join(", ")}</p>
-                    <select
-                      className="mt-2 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+                    <Select
+                      className="mt-2 w-full py-1.5"
                       value={editedTargets[mapping.id] ?? mapping.targetField}
                       onChange={(event) =>
                         setEditedTargets((prev) => ({ ...prev, [mapping.id]: event.target.value }))
@@ -238,7 +239,7 @@ export default function UploadPage() {
                         </option>
                       ))}
                       <option value={IGNORE_FIELD}>Not needed — ignore this column</option>
-                    </select>
+                    </Select>
                   </div>
                 ))}
               <Button onClick={handleConfirmMappings}>Confirm mappings and continue</Button>
@@ -290,7 +291,7 @@ function FileField({ label, onChange }: { label: string; onChange: (file: File |
         type="file"
         accept=".csv"
         onChange={(event) => onChange(event.target.files?.[0] ?? null)}
-        className="text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
+        className="w-full text-sm text-muted file:mr-3 file:rounded-md file:border-0 file:bg-background file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-border"
       />
     </label>
   );
