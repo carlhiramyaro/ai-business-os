@@ -30,7 +30,10 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
 
-  backup_retention_period = 7
+  # 30, not the RDS default of 7 -- v0.5 slice 3 (multi-tenant hardening,
+  # docs/decisions.md [2026-08-01]): 7 days means corruption discovered on
+  # day 8 is unrecoverable. Negligible cost difference at this data size.
+  backup_retention_period = 30
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:30-mon:05:30"
 
