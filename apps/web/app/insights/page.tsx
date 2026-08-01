@@ -120,7 +120,7 @@ export default function InsightsPage() {
 
   if (!accessToken) {
     return (
-      <div className="flex flex-1 items-center justify-center px-6 py-16">
+      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
         <p className="text-sm text-muted">
           Please{" "}
           <Link href="/login" className="text-brand underline">
@@ -133,7 +133,7 @@ export default function InsightsPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-16">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
       <div className="flex items-center gap-2">
         <h1 className="text-2xl font-semibold text-foreground">Insights</h1>
         {unreadCount > 0 && <Badge tone="danger">{unreadCount} unread</Badge>}

@@ -87,7 +87,7 @@ export default function ChatPage() {
 
   if (!accessToken) {
     return (
-      <div className="flex flex-1 items-center justify-center px-6 py-16">
+      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
         <p className="text-sm text-muted">
           Please{" "}
           <Link href="/login" className="text-brand underline">
@@ -100,7 +100,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-16">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">Chat</h1>
         <p className="text-sm text-muted">Ask questions grounded in your business&apos;s report and data.</p>

@@ -39,7 +39,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center px-6 py-16">
+    <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
       <Card className="w-full max-w-sm">
         <div className="mb-6 flex gap-6 border-b border-border text-sm font-medium">
           <button
