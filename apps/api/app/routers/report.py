@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -5,10 +7,16 @@ from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_report, require_worker_online
 from app.embedding_generation import delete_embeddings_for_report
 from app.models import AgentOutput, AgentRun, Business, Report, ReportSection
+from app.rate_limit import RateLimit
 from app.schemas.report import ReportDetail, ReportGenerateRequest, ReportGenerateResponse, ReportSummary
 from app.tasks import generate_report_task
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/reports", tags=["reports"])
+
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]): a
+# cost circuit-breaker (4 concurrent LLM analyst calls + a manager call
+# per report), not a security limit.
+_RATE_LIMIT_REPORTS = os.getenv("RATE_LIMIT_REPORTS", "10/hour")
 
 
 def _business_health(db: Session, report_id) -> str:
@@ -42,7 +50,12 @@ def list_reports(business: Business = Depends(get_owned_business), db: Session =
     ]
 
 
-@router.post("/generate", response_model=ReportGenerateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/generate",
+    response_model=ReportGenerateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_REPORTS, "reports"))],
+)
 def generate_report_endpoint(
     payload: ReportGenerateRequest,
     business: Business = Depends(get_owned_business),

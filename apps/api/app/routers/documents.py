@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +9,7 @@ from app.database import get_db
 from app.dependencies import get_owned_business, require_worker_online
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.models import Business, DocumentExtraction, UploadSession
+from app.rate_limit import RateLimit
 from app.schemas.documents import (
     DocumentConfirmResponse,
     DocumentCreateResponse,
@@ -21,6 +23,12 @@ from app.tasks import extract_document_task
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/documents", tags=["documents"])
 
 VALID_DATASET_TYPES = ("sales", "inventory", "expenses")
+
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]): a
+# cost circuit-breaker (vision-LLM extraction + S3 writes), not a security
+# limit. Higher than uploads' since one document = one small photo, not a
+# potentially-large multi-file CSV batch.
+_RATE_LIMIT_DOCUMENTS = os.getenv("RATE_LIMIT_DOCUMENTS", "60/hour")
 
 # Document processing (v0.3, roadmap.md): photograph a receipt/invoice ->
 # vision-LLM extraction -> a review screen (the document-era sibling of the
@@ -49,7 +57,12 @@ def _get_extraction(db: Session, session: UploadSession) -> DocumentExtraction:
     return extraction
 
 
-@router.post("/", response_model=DocumentCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/",
+    response_model=DocumentCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_DOCUMENTS, "documents"))],
+)
 def create_document(
     dataset_type: str = Form(..., alias="datasetType"),
     image: UploadFile = File(...),

@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, status
 from langfuse import propagate_attributes
 from sqlalchemy.orm import Session
@@ -6,6 +8,7 @@ from app.chat_generation import generate_chat_answer
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_conversation
 from app.models import Business, Conversation, Message
+from app.rate_limit import RateLimit
 from app.schemas.chat import (
     ConversationCreateResponse,
     ConversationHistory,
@@ -17,6 +20,13 @@ from app.schemas.chat import (
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/chat", tags=["chat"])
 
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]): a
+# cost circuit-breaker, not a security limit -- unlike auth's endpoints,
+# nothing here is a brute-force target. 300/day is what actually bounds
+# real OpenAI spend; 20/minute alone would let a stuck client loop burn
+# money for an hour before anyone notices.
+_RATE_LIMIT_CHAT = os.getenv("RATE_LIMIT_CHAT", "20/minute;300/day")
+
 
 @router.post("/", response_model=ConversationCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_conversation(business: Business = Depends(get_owned_business), db: Session = Depends(get_db)):
@@ -27,7 +37,11 @@ def create_conversation(business: Business = Depends(get_owned_business), db: Se
     return ConversationCreateResponse(conversation_id=conversation.id)
 
 
-@router.post("/{conversation_id}/messages", response_model=SendMessageResponse)
+@router.post(
+    "/{conversation_id}/messages",
+    response_model=SendMessageResponse,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_CHAT, "chat"))],
+)
 def send_message(
     payload: SendMessageRequest,
     business: Business = Depends(get_owned_business),

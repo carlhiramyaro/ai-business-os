@@ -1,3 +1,4 @@
+import os
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -5,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_upload_session, require_worker_online
+from app.rate_limit import RateLimit
 from app.models import (
     AgentOutput,
     AgentRun,
@@ -31,6 +33,11 @@ from app.storage import delete_prefix, key_for, upload_fileobj
 from app.tasks import MAPPING_CONFIDENCE_THRESHOLD, finalize_upload_task, run_column_mapping_task
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/uploads", tags=["uploads"])
+
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]): a
+# cost circuit-breaker (column-mapping's LLM fallback, S3 writes), not a
+# security limit.
+_RATE_LIMIT_UPLOADS = os.getenv("RATE_LIMIT_UPLOADS", "30/hour")
 
 
 def _cascade_delete_upload_session(db: Session, upload_session: UploadSession) -> None:
@@ -71,7 +78,12 @@ def _cascade_delete_upload_session(db: Session, upload_session: UploadSession) -
     db.query(Expense).filter(Expense.upload_session_id == upload_session.id).delete(synchronize_session=False)
 
 
-@router.post("/", response_model=UploadCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/",
+    response_model=UploadCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_UPLOADS, "uploads"))],
+)
 def create_upload(
     sales: UploadFile | None = File(None),
     inventory: UploadFile | None = File(None),

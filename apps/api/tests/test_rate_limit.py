@@ -284,3 +284,148 @@ def test_refresh_limit_returns_429_after_threshold(client, _enable_rate_limiting
 
     response = client.post("/api/v1/auth/refresh", json={"refreshToken": refresh_token})
     assert response.status_code == 429
+
+
+# v0.5 slice 3, Commit 5: LLM/expensive-endpoint limits. Same
+# read-once-at-decoration-time constraint as register/refresh above --
+# each of these five routes' RateLimit instance is constructed once, at
+# import time, so the tests below pre-exhaust the exact (spec, scope, key)
+# the real route checks via check_rate_limit directly (fast, no need to
+# actually exercise the expensive request path -- OpenAI calls, S3
+# writes -- N times just to prove the dependency is wired to the right
+# scope), then confirm a single real request to the real endpoint is
+# already limited. This is what actually proves the wiring: the scope
+# name and key resolution used here must exactly match what the route
+# itself uses, or this would pass for the wrong reason.
+
+from app.rate_limit import check_rate_limit  # noqa: E402
+
+
+def _register_and_login(client, email):
+    client.post("/api/v1/auth/register", json={"fullName": "Test", "email": email, "password": "password123"})
+    return client.post("/api/v1/auth/login", json={"email": email, "password": "password123"}).json()["accessToken"]
+
+
+def _create_business(client, token, name="Test Biz"):
+    response = client.post(
+        "/api/v1/businesses/", json={"businessName": name}, headers={"Authorization": f"Bearer {token}"}
+    )
+    return response.json()["id"]
+
+
+def _decode_sub(access_token: str) -> str:
+    from app.security import decode_access_token
+
+    return decode_access_token(access_token)["sub"]
+
+
+_FAKE_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def test_chat_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    token = _register_and_login(client, "chat-limit@example.com")
+    business_id = _create_business(client, token)
+
+    for _ in range(20):
+        check_rate_limit("20/minute;300/day", "chat", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/chat/{_FAKE_ID}/messages",
+        json={"message": "hi"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 429
+
+
+def test_chat_limit_is_shared_across_a_users_businesses_not_per_business(client, _enable_rate_limiting_for_auth):
+    """The cost this limit bounds is per-user (real OpenAI spend), not
+    per-business -- a user with two businesses shares one chat budget."""
+    token = _register_and_login(client, "multi-biz@example.com")
+    business_a = _create_business(client, token, "Biz A")
+    business_b = _create_business(client, token, "Biz B")
+
+    for _ in range(20):
+        check_rate_limit("20/minute;300/day", "chat", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_b}/chat/{_FAKE_ID}/messages",
+        json={"message": "hi"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 429  # business_a's usage counted against business_b's request too
+
+
+def test_chat_limit_is_not_shared_across_users(client, _enable_rate_limiting_for_auth):
+    token_a = _register_and_login(client, "user-a@example.com")
+    token_b = _register_and_login(client, "user-b@example.com")
+    business_b_id = _create_business(client, token_b, "User B's Biz")
+
+    for _ in range(20):
+        check_rate_limit("20/minute;300/day", "chat", f"user:{_decode_sub(token_a)}")
+
+    # User A is exhausted, but User B (a different key) is untouched --
+    # 403 (not the owner of a fake conversation under their own business)
+    # rather than 429 proves the rate limit did NOT trip for User B.
+    response = client.post(
+        f"/api/v1/businesses/{business_b_id}/chat/{_FAKE_ID}/messages",
+        json={"message": "hi"},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert response.status_code == 404  # real business, fake conversation_id -> 404, not 429
+
+
+def test_reports_generate_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    token = _register_and_login(client, "reports-limit@example.com")
+    business_id = _create_business(client, token)
+
+    for _ in range(10):
+        check_rate_limit("10/hour", "reports", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/reports/generate",
+        json={"periodStart": "2026-01-01", "periodEnd": "2026-01-31"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 429
+
+
+def test_insights_run_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    token = _register_and_login(client, "insights-limit@example.com")
+    business_id = _create_business(client, token)
+
+    for _ in range(10):
+        check_rate_limit("10/hour", "insights", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/insights/run", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 429
+
+
+def test_uploads_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    token = _register_and_login(client, "uploads-limit@example.com")
+    business_id = _create_business(client, token)
+
+    for _ in range(30):
+        check_rate_limit("30/hour", "uploads", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/uploads/", files={}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 429  # would otherwise be 400 (no files provided)
+
+
+def test_documents_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    token = _register_and_login(client, "documents-limit@example.com")
+    business_id = _create_business(client, token)
+
+    for _ in range(60):
+        check_rate_limit("60/hour", "documents", f"user:{_decode_sub(token)}")
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/documents/",
+        data={"datasetType": "sales"},
+        files={"image": ("receipt.jpg", b"fake-image-bytes", "image/jpeg")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 429
