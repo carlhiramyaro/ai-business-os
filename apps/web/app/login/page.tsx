@@ -30,7 +30,7 @@ export default function LoginPage() {
       } else {
         await login(email, password);
       }
-      router.push("/upload");
+      router.push("/entry");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -43,13 +43,13 @@ export default function LoginPage() {
       <Card className="w-full max-w-sm">
         <div className="mb-6 flex gap-6 border-b border-border text-sm font-medium">
           <button
-            className={`-mb-px border-b-2 pb-3 ${mode === "login" ? "border-brand text-foreground" : "border-transparent text-muted"}`}
+            className={`-mb-px border-b-2 px-1 py-3 ${mode === "login" ? "border-brand text-foreground" : "border-transparent text-muted"}`}
             onClick={() => setMode("login")}
           >
             Log in
           </button>
           <button
-            className={`-mb-px border-b-2 pb-3 ${mode === "register" ? "border-brand text-foreground" : "border-transparent text-muted"}`}
+            className={`-mb-px border-b-2 px-1 py-3 ${mode === "register" ? "border-brand text-foreground" : "border-transparent text-muted"}`}
             onClick={() => setMode("register")}
           >
             Sign up
@@ -62,6 +62,7 @@ export default function LoginPage() {
               placeholder="Full name"
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
+              autoComplete="name"
               required
             />
           )}
@@ -70,6 +71,10 @@ export default function LoginPage() {
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
+            autoComplete="email"
+            inputMode="email"
+            autoCapitalize="none"
+            spellCheck={false}
             required
           />
           <Input
@@ -77,6 +82,7 @@ export default function LoginPage() {
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
+            autoComplete={mode === "register" ? "new-password" : "current-password"}
             required
           />
           {error && <p className="text-sm text-danger-fg">{error}</p>}

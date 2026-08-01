@@ -251,7 +251,9 @@ export default function UploadPage() {
               <p className="text-sm text-success-fg">Upload complete — the report is ready.</p>
               {status.duplicateWarning && (
                 <div className="flex items-start gap-2">
-                  <Badge tone="warning">Possible duplicates</Badge>
+                  <Badge tone="warning" className="shrink-0">
+                    Possible duplicates
+                  </Badge>
                   <p className="text-sm text-muted">
                     Some rows in this upload look like data you&apos;ve already entered — they were still added,
                     nothing was dropped, but check for double-counting.

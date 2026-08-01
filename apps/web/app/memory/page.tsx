@@ -85,15 +85,15 @@ export default function MemoryPage() {
             </Card>
           )}
           {facts.map((fact) => (
-            <Card key={fact.id} className="flex items-center justify-between gap-4">
+            <Card key={fact.id} className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-col gap-1">
                 <p className="text-sm text-foreground">{fact.content}</p>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Badge tone="neutral">{fact.source}</Badge>
                   <span className="text-xs text-muted">{new Date(fact.createdAt).toLocaleString()}</span>
                 </div>
               </div>
-              <Button variant="danger" onClick={() => handleDelete(fact.id)}>
+              <Button variant="danger" onClick={() => handleDelete(fact.id)} className="sm:shrink-0">
                 Delete
               </Button>
             </Card>

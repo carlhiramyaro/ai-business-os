@@ -167,28 +167,32 @@ export default function ReportsPage() {
         <Card>
           <form onSubmit={handleGenerateReport} className="flex flex-col gap-4">
             <label className="mb-2 block text-sm font-medium text-foreground">Generate a report for a date range</label>
-            <div className="flex items-end gap-3">
-              <label className="flex flex-col gap-1 text-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="flex w-full flex-col gap-1 text-sm sm:w-auto">
                 <span className="text-muted">From</span>
                 <Input
                   type="date"
                   value={periodStart}
                   max={periodEnd || undefined}
                   onChange={(event) => setPeriodStart(event.target.value)}
-                  className="py-1.5"
+                  className="w-full py-1.5 sm:w-auto"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label className="flex w-full flex-col gap-1 text-sm sm:w-auto">
                 <span className="text-muted">To</span>
                 <Input
                   type="date"
                   value={periodEnd}
                   min={periodStart || undefined}
                   onChange={(event) => setPeriodEnd(event.target.value)}
-                  className="py-1.5"
+                  className="w-full py-1.5 sm:w-auto"
                 />
               </label>
-              <Button type="submit" disabled={!periodStart || !periodEnd || generatingReportId !== null}>
+              <Button
+                type="submit"
+                disabled={!periodStart || !periodEnd || generatingReportId !== null}
+                className="w-full sm:w-auto"
+              >
                 {generatingReportId ? "Generating…" : "Generate report"}
               </Button>
             </div>
@@ -210,7 +214,7 @@ export default function ReportsPage() {
             </Card>
           )}
           {reports.map((report) => (
-            <Card key={report.id} className="flex items-center justify-between">
+            <Card key={report.id} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-foreground">
                   {report.periodStart} – {report.periodEnd}
@@ -224,14 +228,14 @@ export default function ReportsPage() {
                   </Badge>
                 )}
               </div>
-              <div className="flex items-center gap-4">
-                <button
-                  className="text-sm font-medium text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted"
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="secondary"
                   onClick={() => handleOpenReport(report.id)}
                   disabled={report.status !== "COMPLETED"}
                 >
                   View
-                </button>
+                </Button>
                 <Button variant="danger" onClick={() => handleDeleteReport(report.id)}>
                   Delete
                 </Button>
@@ -243,7 +247,10 @@ export default function ReportsPage() {
 
       {selectedReport && (
         <Card className="flex flex-col gap-5">
-          <button className="self-start text-sm text-brand hover:underline" onClick={() => setSelectedReport(null)}>
+          <button
+            className="-ml-2 min-h-11 self-start px-2 py-2 text-sm text-brand hover:underline"
+            onClick={() => setSelectedReport(null)}
+          >
             ← Back to list
           </button>
 
