@@ -17,6 +17,13 @@ load_dotenv()
 # pytest (docker compose up). See docs/infra-guide.md.
 os.environ["LANGFUSE_TRACING_ENABLED"] = "false"
 
+# Same reasoning as LANGFUSE_TRACING_ENABLED above, unconditional not
+# setdefault: without this, a developer's local .env silently decides
+# whether the entire existing test suite intermittently fails on rate
+# limits it was never written to expect. tests/test_rate_limit.py
+# re-enables this per-test via monkeypatch.setenv. See app/rate_limit.py.
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+
 TEST_DATABASE_URL = (
     f"postgresql://{os.getenv('POSTGRES_USER')}:"
     f"{os.getenv('POSTGRES_PASSWORD')}@"

@@ -25,6 +25,17 @@ pgvector==0.5.0
 langfuse==4.14.2
 sentry-sdk==2.66.1
 structlog==26.1.0
+# Rate limiting (v0.5 slice 3: multi-tenant hardening). `limits` directly,
+# not the more commonly-reached-for `slowapi` -- slowapi's API is
+# decorator-centric (`@limiter.limit(...)`, requiring `request: Request` on
+# every decorated route) and fails silently open on any route someone
+# forgets to decorate. `limits` is the library slowapi itself wraps
+# (identical counting/storage code); wrapping it in a plain FastAPI
+# dependency (app/rate_limit.py) matches this codebase's existing
+# `require_worker_online` pattern and keeps a 429 raised *inside* FastAPI's
+# routing layer, where CORSMiddleware still decorates it -- a 429 from
+# outer ASGI middleware would not get CORS headers. See docs/decisions.md.
+limits==5.8.0
 
 # Explicit, not just left as a transitive pin -- sqlalchemy's own package
 # metadata declares this as a hard install_requires, gated by a

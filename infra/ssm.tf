@@ -184,13 +184,100 @@ resource "aws_ssm_parameter" "langfuse_secret_key" {
 }
 
 resource "aws_ssm_parameter" "langfuse_host" {
-  name  = "${local.ssm_path}/LANGFUSE_HOST"
-  type  = "String"
-  value = "https://cloud.langfuse.com"
+  name = "${local.ssm_path}/LANGFUSE_HOST"
+  type = "String"
+  # US region, not the "https://cloud.langfuse.com" EU default this was
+  # originally declared with -- the actual Langfuse project created for
+  # this app lives on the US region (its API keys are region-scoped, so
+  # this must match). Originally fixed by hand via `aws ssm put-parameter`
+  # during the observability slice's production drill; declaring it here
+  # too so a future `terraform apply` doesn't silently revert it back to
+  # the EU default and break tracing again. See docs/decisions.md.
+  value = "https://us.cloud.langfuse.com"
 }
 
 resource "aws_ssm_parameter" "langfuse_tracing_enabled" {
   name  = "${local.ssm_path}/LANGFUSE_TRACING_ENABLED"
   type  = "String"
   value = "true"
+}
+
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]):
+# rate limiting. Every value here has an in-code default (app/rate_limit.py,
+# app/routers/auth.py) -- these entries exist so a limit can be tuned in
+# production by changing one value + redeploying, never by editing code.
+# A separate logical Redis DB from the Celery broker (db 0) so debugging
+# one never resets the other's counters.
+resource "aws_ssm_parameter" "rate_limit_enabled" {
+  name  = "${local.ssm_path}/RATE_LIMIT_ENABLED"
+  type  = "String"
+  value = "true"
+}
+
+resource "aws_ssm_parameter" "rate_limit_storage_uri" {
+  name  = "${local.ssm_path}/RATE_LIMIT_STORAGE_URI"
+  type  = "String"
+  value = "redis://redis:6379/1"
+}
+
+resource "aws_ssm_parameter" "rate_limit_default" {
+  name  = "${local.ssm_path}/RATE_LIMIT_DEFAULT"
+  type  = "String"
+  value = "300/minute"
+}
+
+# Auth endpoints (app/routers/auth.py) -- security-motivated, not cost.
+resource "aws_ssm_parameter" "rate_limit_register" {
+  name  = "${local.ssm_path}/RATE_LIMIT_REGISTER"
+  type  = "String"
+  value = "5/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_login_ip" {
+  name  = "${local.ssm_path}/RATE_LIMIT_LOGIN_IP"
+  type  = "String"
+  value = "100/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_login_email" {
+  name  = "${local.ssm_path}/RATE_LIMIT_LOGIN_EMAIL"
+  type  = "String"
+  value = "10/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_refresh" {
+  name  = "${local.ssm_path}/RATE_LIMIT_REFRESH"
+  type  = "String"
+  value = "60/hour"
+}
+
+# LLM/expensive endpoints -- cost circuit-breakers, not security.
+resource "aws_ssm_parameter" "rate_limit_chat" {
+  name  = "${local.ssm_path}/RATE_LIMIT_CHAT"
+  type  = "String"
+  value = "20/minute;300/day"
+}
+
+resource "aws_ssm_parameter" "rate_limit_reports" {
+  name  = "${local.ssm_path}/RATE_LIMIT_REPORTS"
+  type  = "String"
+  value = "10/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_insights" {
+  name  = "${local.ssm_path}/RATE_LIMIT_INSIGHTS"
+  type  = "String"
+  value = "10/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_uploads" {
+  name  = "${local.ssm_path}/RATE_LIMIT_UPLOADS"
+  type  = "String"
+  value = "30/hour"
+}
+
+resource "aws_ssm_parameter" "rate_limit_documents" {
+  name  = "${local.ssm_path}/RATE_LIMIT_DOCUMENTS"
+  type  = "String"
+  value = "60/hour"
 }

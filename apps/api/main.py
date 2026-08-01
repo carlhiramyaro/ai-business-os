@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.logging_config import configure_logging
 from app.observability import flush_observability, init_observability
+from app.rate_limit import DEFAULT_LIMIT_SPEC, RateLimit
 from app.routers import auth, business, chat, documents, entities, entries, insights, memory, report, upload
 from app.worker_health import workers_online
 
@@ -37,7 +38,13 @@ async def lifespan(_app: FastAPI):
     flush_observability()
 
 
-app = FastAPI(lifespan=lifespan)
+# App-level, not per-route: applies to every route including ones added in
+# future slices, with no per-route decoration to forget, and stays inside
+# FastAPI's routing layer so CORSMiddleware still wraps a 429 response (an
+# ASGI-middleware-raised 429 would not get CORS headers). Health endpoints
+# are deliberately not exempted -- 300/min is well above any plausible
+# poll rate, so this is a decision, not an oversight. See app/rate_limit.py.
+app = FastAPI(lifespan=lifespan, dependencies=[Depends(RateLimit(DEFAULT_LIMIT_SPEC, "default"))])
 
 # Comma-separated list of allowed frontend origins. Defaults to local dev;
 # production sets this via SSM (e.g. "https://app.example.com") so the
