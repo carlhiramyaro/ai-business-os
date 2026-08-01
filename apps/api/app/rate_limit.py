@@ -107,6 +107,48 @@ def rate_limit_key(request: Request) -> str:
     return f"ip:{client_ip(request)}"
 
 
+def check_rate_limit(spec: str, scope: str, key: str) -> None:
+    """The reusable core: given an already-resolved key, hit every item in
+    `spec` and raise a 429 on the first breach. `RateLimit` below is a thin
+    Request-to-key adapter over this for the common case; call this
+    directly when a limit needs a key that isn't derivable from the
+    Request alone -- e.g. app/routers/auth.py's login endpoint, which
+    limits by *both* IP and the request body's email address, requiring
+    two separate calls with two separately-resolved keys."""
+    if os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() == "false":
+        return
+
+    storage_uri = os.getenv("RATE_LIMIT_STORAGE_URI", _DEFAULT_STORAGE_URI)
+    try:
+        _storage, limiter = _get_limiter(storage_uri)
+        # Each item in a compound spec ("20/minute;300/day") is hit in
+        # sequence; if an earlier item passes but a later one rejects, the
+        # earlier item's counter has already been incremented. This is the
+        # standard, accepted imprecision for compound limits (the same
+        # tradeoff slowapi's own decorator makes) -- the alternative (a
+        # check-all-then-hit-all two-phase commit) isn't atomic across a
+        # compound spec either, for a problem this doesn't need to solve.
+        for item in limits.parse_many(spec):
+            if not limiter.hit(item, scope, key):
+                stats = limiter.get_window_stats(item, scope, key)
+                retry_after = max(1, int(stats.reset_time - time.time()))
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Too many requests. Please try again in {retry_after} seconds.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Fails open: Redis being down already degrades this system
+        # visibly and safely elsewhere (require_worker_online returns
+        # 503) -- failing closed here would turn a Redis blip into a full
+        # outage of even read-only endpoints, for no security benefit.
+        # Deliberate availability-over-strictness call.
+        logger.warning("rate_limit_storage_unavailable", scope=scope, error=str(exc))
+        return
+
+
 class RateLimit:
     """A FastAPI dependency, not a decorator -- see this module's
     docstring for why. Use as `Depends(RateLimit("20/minute", "chat"))`,
@@ -123,40 +165,6 @@ class RateLimit:
         self._spec = spec
         self._scope = scope
         self._key_fn = key_fn
-        self._items = limits.parse_many(spec)
 
     def __call__(self, request: Request) -> None:
-        if os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() == "false":
-            return
-
-        storage_uri = os.getenv("RATE_LIMIT_STORAGE_URI", _DEFAULT_STORAGE_URI)
-        try:
-            _storage, limiter = _get_limiter(storage_uri)
-            key = self._key_fn(request)
-            # Each item in a compound spec ("20/minute;300/day") is hit in
-            # sequence; if an earlier item passes but a later one rejects,
-            # the earlier item's counter has already been incremented.
-            # This is the standard, accepted imprecision for compound
-            # limits (the same tradeoff slowapi's own decorator makes) --
-            # the alternative (a check-all-then-hit-all two-phase commit)
-            # isn't atomic across a compound spec either, for a problem
-            # this doesn't need to solve.
-            for item in self._items:
-                if not limiter.hit(item, self._scope, key):
-                    stats = limiter.get_window_stats(item, self._scope, key)
-                    retry_after = max(1, int(stats.reset_time - time.time()))
-                    raise HTTPException(
-                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                        detail=f"Too many requests. Please try again in {retry_after} seconds.",
-                        headers={"Retry-After": str(retry_after)},
-                    )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            # Fails open: Redis being down already degrades this system
-            # visibly and safely elsewhere (require_worker_online returns
-            # 503) -- failing closed here would turn a Redis blip into a
-            # full outage of even read-only endpoints, for no security
-            # benefit. Deliberate availability-over-strictness call.
-            logger.warning("rate_limit_storage_unavailable", scope=self._scope, error=str(exc))
-            return
+        check_rate_limit(self._spec, self._scope, self._key_fn(request))

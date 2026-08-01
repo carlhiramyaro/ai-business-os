@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from structlog.testing import capture_logs
 
+import app.routers.auth as auth_module
 from app.rate_limit import RateLimit, _get_limiter, client_ip, rate_limit_key
 from app.security import create_access_token
 
@@ -161,3 +162,125 @@ def test_app_level_default_rate_limit_dependency_is_present():
     from main import app
 
     assert any(isinstance(d.dependency, RateLimit) for d in app.router.dependencies)
+
+
+# v0.5 slice 3, Commit 4: app/routers/auth.py's _RATE_LIMIT_LOGIN_IP/
+# _RATE_LIMIT_LOGIN_EMAIL/_RATE_LIMIT_REGISTER/_RATE_LIMIT_REFRESH are read
+# from the environment once at import time (matching ANALYSIS_INTERVAL_
+# SECONDS' pattern), not per-call -- so these tests override them with
+# monkeypatch.setattr on the already-imported module, not monkeypatch.
+# setenv (which check_rate_limit's own RATE_LIMIT_ENABLED/
+# RATE_LIMIT_STORAGE_URI reads dynamically and setenv works fine for).
+
+
+def _register(client, email="ratelimit@example.com", password="password123"):
+    return client.post(
+        "/api/v1/auth/register", json={"fullName": "Rate Limit Test", "email": email, "password": password}
+    )
+
+
+def _login(client, email="ratelimit@example.com", password="password123", headers=None):
+    return client.post("/api/v1/auth/login", json={"email": email, "password": password}, headers=headers or {})
+
+
+@pytest.fixture()
+def _enable_rate_limiting_for_auth(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_STORAGE_URI", TEST_STORAGE_URI)
+
+
+def test_register_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    """Deliberately does NOT monkeypatch _RATE_LIMIT_REGISTER: unlike
+    login's checks (a plain function reading the module global at call
+    time), register's limit is `Depends(RateLimit(_RATE_LIMIT_REGISTER,
+    ...))` -- the spec string is bound into the RateLimit instance once,
+    at route-decoration time (module import), matching the same
+    read-once-at-startup convention as ANALYSIS_INTERVAL_SECONDS.
+    monkeypatch.setattr on the module name afterward can't reach the
+    already-constructed instance, so this exercises the real default
+    (5/hour) instead."""
+    for i in range(5):
+        response = client.post(
+            "/api/v1/auth/register",
+            json={"fullName": "Test", "email": f"user{i}@example.com", "password": "password123"},
+        )
+        assert response.status_code == 201
+
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"fullName": "Test", "email": "user-over-limit@example.com", "password": "password123"},
+    )
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
+
+
+def test_login_email_limit_trips_even_across_rotating_ips(client, _enable_rate_limiting_for_auth, monkeypatch):
+    """The regression guard for the actual security case: an attacker
+    rotating IPs must not be able to evade the per-email brute-force
+    limit just because the per-IP limit is generous."""
+    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_EMAIL", "2/hour")
+    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_IP", "1000/hour")
+    _register(client, "target@example.com")
+
+    for i in range(2):
+        response = _login(
+            client, email="target@example.com", password="wrong", headers={"X-Forwarded-For": f"10.0.0.{i}"}
+        )
+        assert response.status_code == 401  # wrong password, not yet limited
+
+    limited = _login(
+        client, email="target@example.com", password="wrong", headers={"X-Forwarded-For": "10.0.0.99"}
+    )
+    assert limited.status_code == 429
+
+
+def test_login_429_message_is_identical_for_known_and_unknown_email(
+    client, _enable_rate_limiting_for_auth, monkeypatch
+):
+    """Must not regress the existing enumeration defense (auth.py already
+    returns an identical 401 for unknown-email vs. wrong-password) -- the
+    429 message must carry the same non-distinguishing guarantee."""
+    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_EMAIL", "2/hour")
+    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_IP", "1000/hour")
+    _register(client, "known@example.com")
+
+    for _ in range(2):
+        _login(client, email="known@example.com", password="wrong")
+    known_429 = _login(client, email="known@example.com", password="wrong")
+    assert known_429.status_code == 429
+
+    for _ in range(2):
+        _login(client, email="nobody-at-all@example.com", password="wrong")
+    unknown_429 = _login(client, email="nobody-at-all@example.com", password="wrong")
+    assert unknown_429.status_code == 429
+
+    # Retry-After's numeric value legitimately differs by a few seconds
+    # (real wall-clock time elapsed between the two request sequences) --
+    # compare the message with digits normalized out, not byte-for-byte.
+    def _template(detail: str) -> str:
+        return "".join("N" if ch.isdigit() else ch for ch in detail)
+
+    assert _template(known_429.json()["detail"]) == _template(unknown_429.json()["detail"])
+
+
+def test_refresh_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
+    """Same read-once-at-import constraint as register above -- the
+    default (60/hour) is too many requests to loop directly in a fast
+    test, so this pre-exhausts the exact (scope, key) the real route uses
+    via check_rate_limit directly, then confirms the real endpoint (same
+    underlying Redis counter) is already limited."""
+    from app.rate_limit import check_rate_limit
+
+    _register(client)
+    refresh_token = _login(client).json()["refreshToken"]
+
+    # TestClient's request.client.host is the fixed string "testclient"
+    # (no real socket involved) -- confirmed directly against a throwaway
+    # app; with no X-Forwarded-For header sent, this is the key
+    # rate_limit_key resolves to for every unauthenticated TestClient
+    # request in this test.
+    for _ in range(60):
+        check_rate_limit(auth_module._RATE_LIMIT_REFRESH, "refresh", "ip:testclient")
+
+    response = client.post("/api/v1/auth/refresh", json={"refreshToken": refresh_token})
+    assert response.status_code == 429

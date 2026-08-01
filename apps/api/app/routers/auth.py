@@ -1,11 +1,13 @@
+import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import RefreshToken, User
+from app.rate_limit import RateLimit, check_rate_limit, client_ip
 from app.schemas.auth import (
     LoginRequest,
     RefreshRequest,
@@ -23,6 +25,35 @@ from app.security import (
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]):
+# these endpoints were wide open to brute-force/credential-stuffing/
+# enumeration before this -- rate limiting closes that. Every spec is
+# env-tunable via SSM without a redeploy; see .env.example for the full
+# list and reasoning per limit.
+_RATE_LIMIT_REGISTER = os.getenv("RATE_LIMIT_REGISTER", "5/hour")
+_RATE_LIMIT_LOGIN_IP = os.getenv("RATE_LIMIT_LOGIN_IP", "100/hour")
+_RATE_LIMIT_LOGIN_EMAIL = os.getenv("RATE_LIMIT_LOGIN_EMAIL", "10/hour")
+_RATE_LIMIT_REFRESH = os.getenv("RATE_LIMIT_REFRESH", "60/hour")
+
+
+def _limit_login(request: Request, payload: LoginRequest) -> None:
+    """Two separate limits, not one: per-IP (generous -- carrier-grade NAT
+    is common for this product's target market, so a strict IP limit would
+    punish a whole shared network for one bad actor) and per-email (tight
+    -- the actual defense against a targeted brute force against one known
+    account, which an attacker rotating IPs would otherwise evade
+    entirely). FastAPI parses the JSON body once and injects the same
+    LoginRequest into both this dependency and the route handler, so there
+    is no double body-read.
+
+    Deliberately not account lockout: lockout hands an attacker a trivial
+    way to deny a real user access to their own account just by repeatedly
+    guessing their email with a wrong password. Rate limiting achieves the
+    same brute-force defense without that footgun. See docs/decisions.md.
+    """
+    check_rate_limit(_RATE_LIMIT_LOGIN_IP, "login-ip", f"ip:{client_ip(request)}")
+    check_rate_limit(_RATE_LIMIT_LOGIN_EMAIL, "login-email", f"email:{payload.email.lower()}")
+
 
 def _issue_tokens(db: Session, user: User) -> TokenResponse:
     raw_refresh_token, token_hash, expires_at = generate_refresh_token()
@@ -35,7 +66,12 @@ def _issue_tokens(db: Session, user: User) -> TokenResponse:
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_REGISTER, "register"))],
+)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == payload.email).first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -51,7 +87,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, dependencies=[Depends(_limit_login)])
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     invalid_credentials = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
@@ -67,7 +103,11 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return _issue_tokens(db, user)
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    dependencies=[Depends(RateLimit(_RATE_LIMIT_REFRESH, "refresh"))],
+)
 def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     invalid_token = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
