@@ -69,13 +69,13 @@ export default function EntryPage() {
 
       {businessId && (
         <>
-          <div className="flex gap-2 rounded-lg border border-border bg-surface p-1">
+          <div className="flex gap-1 rounded-lg border border-border bg-surface p-1">
             {ENTRY_TYPES.map((type) => (
               <button
                 key={type.value}
                 type="button"
                 onClick={() => setEntryType(type.value)}
-                className={`flex-1 rounded-md py-2.5 text-sm font-medium transition-colors ${
+                className={`min-h-11 flex-1 rounded-md py-2.5 text-sm font-medium transition-colors ${
                   entryType === type.value
                     ? "bg-brand text-brand-foreground"
                     : "text-muted hover:text-foreground"
@@ -102,7 +102,9 @@ function SuccessBanner({ duplicateWarning, onAddAnother }: { duplicateWarning: b
       <p className="text-sm text-success-fg">Saved.</p>
       {duplicateWarning && (
         <div className="flex items-start gap-2">
-          <Badge tone="warning">Possible duplicate</Badge>
+          <Badge tone="warning" className="shrink-0">
+            Possible duplicate
+          </Badge>
           <p className="text-sm text-muted">
             This looks like something you&apos;ve already entered — it was still saved, but double-check.
           </p>
