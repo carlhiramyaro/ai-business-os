@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { createConversation, sendChatMessage, type ChatToolCall } from "@/lib/api";
 import { BusinessPicker } from "@/components/BusinessPicker";
@@ -42,6 +42,13 @@ export default function ChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [startingConversation, setStartingConversation] = useState(false);
+  const paneRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    pane.scrollTop = pane.scrollHeight;
+  }, [messages, sending]);
 
   async function handleSelectBusiness(id: string) {
     if (!accessToken) return;
@@ -100,7 +107,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
+    <div className="mx-auto flex w-full max-w-2xl min-h-0 flex-1 flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">Chat</h1>
         <p className="text-sm text-muted">Ask questions grounded in your business&apos;s report and data.</p>
@@ -115,8 +122,11 @@ export default function ChatPage() {
       {startingConversation && <p className="text-sm text-muted">Starting conversation…</p>}
 
       {conversationId && (
-        <Card className="flex flex-col gap-4">
-          <div className="flex h-96 flex-col gap-3 overflow-y-auto">
+        <Card className="flex min-h-0 flex-1 flex-col gap-4 md:flex-none">
+          {/* Once this pane is the scrolling element, the composer below
+              it (last child of a height-bounded card) is automatically
+              always visible -- no sticky/fixed positioning needed. */}
+          <div ref={paneRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto md:h-96 md:flex-none">
             {messages.length === 0 && (
               <p className="text-sm text-muted">
                 Ask something like &quot;Why is profit decreasing?&quot; or &quot;What should I focus on?&quot;
@@ -147,6 +157,9 @@ export default function ChatPage() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               disabled={sending}
+              enterKeyHint="send"
+              autoComplete="off"
+              autoCorrect="off"
             />
             <Button type="submit" disabled={sending}>
               Send
