@@ -60,6 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
+
+
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
     """Binds a request_id to every log line emitted while handling this
@@ -93,6 +96,47 @@ async def request_context_middleware(request: Request, call_next):
     finally:
         structlog.contextvars.clear_contextvars()
     response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# v0.5 slice 3 (multi-tenant hardening, docs/decisions.md [2026-08-01]): set
+# here rather than in Caddy -- editing Caddyfile forces a full EC2 instance
+# replacement (it's baked into infra/ec2.tf's user-data), while an
+# app-code change ships via the normal fast image-deploy path and is
+# testable locally/in CI, which an edge-only Caddy config isn't.
+#
+# CSP is "default-src 'none'; frame-ancestors 'none'" -- correct and safe
+# for a pure-JSON API that serves no HTML/scripts of its own. A real CSP
+# for apps/web (the actual browser-facing surface) needs nonce plumbing
+# through Next's script tags and report-only iteration first; deliberately
+# out of scope here, see docs/decisions.md.
+#
+# Registered AFTER request_context_middleware, not before: Starlette's
+# @app.middleware("http") stacks so the LAST-registered one is OUTERMOST.
+# Confirmed the hard way -- registering this one first put it *inside*
+# request_context_middleware, so its own call_next() received the raw
+# propagating exception (not yet converted to a Response) on any 500 path
+# and never reached the header-setting lines below at all, silently
+# stripping every security header from every error response. Outermost is
+# what makes call_next() here always receive an already-fully-formed
+# Response, whether that's a route's normal return or
+# request_context_middleware's synthesized 500.
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    # Gated on non-local specifically: sending this from http://localhost
+    # pins the browser to HTTPS for "localhost" -- every other local
+    # project on that port, not just this one -- for a year, reversible
+    # only via chrome://net-internals/#hsts. A real, hard-to-reverse
+    # foot-gun if sent unconditionally.
+    if _ENVIRONMENT != "local":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
