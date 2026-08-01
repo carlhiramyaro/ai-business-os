@@ -4,3 +4,4 @@ __pycache__/
 myenv/
 .pytest_cache/
 dump.rdb
+celerybeat-schedule

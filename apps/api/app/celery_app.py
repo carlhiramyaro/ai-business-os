@@ -96,9 +96,20 @@ def _log_task_failure(task_id=None, exception=None, sender=None, traceback=None,
 # Interval is env-overridable so a demo/dev session can shrink it well
 # below the 24h production default without a code change.
 ANALYSIS_INTERVAL_SECONDS = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", str(24 * 60 * 60)))
+# v0.5 slice 3: same env-overridable-interval trick as ANALYSIS_INTERVAL_
+# SECONDS above -- this exact mechanism is what let the observability
+# slice's production drill verify a 24h beat task in one sitting by
+# temporarily setting it to 60s. See docs/decisions.md [2026-08-01].
+REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS = int(
+    os.getenv("REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS", str(24 * 60 * 60))
+)
 celery_app.conf.beat_schedule = {
     "dispatch-scheduled-analysis": {
         "task": "dispatch_scheduled_analysis",
         "schedule": ANALYSIS_INTERVAL_SECONDS,
+    },
+    "cleanup-expired-refresh-tokens": {
+        "task": "cleanup_expired_refresh_tokens",
+        "schedule": REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS,
     },
 }
