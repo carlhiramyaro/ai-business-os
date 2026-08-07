@@ -52,7 +52,11 @@ def fake_call_vision_llm(system_prompt, image_bytes, mime_type):
 @pytest.fixture(autouse=True)
 def _patch_storage_and_db(monkeypatch):
     monkeypatch.setattr(documents_router, "upload_fileobj", fake_upload_fileobj)
-    monkeypatch.setattr(tasks, "download_fileobj", fake_download_fileobj)
+    # v0.6 slice 4: the S3 download moved from app/tasks.py's
+    # extract_document_task into app/document_extraction.py's
+    # run_document_extraction (shared with the new WhatsApp photo flow) --
+    # patch it where it's actually called now.
+    monkeypatch.setattr(document_extraction, "download_fileobj", fake_download_fileobj)
     monkeypatch.setattr(tasks, "SessionLocal", TestSessionLocal)
     monkeypatch.setattr(document_extraction, "_call_vision_llm", fake_call_vision_llm)
     FAKE_S3.clear()

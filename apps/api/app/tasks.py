@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 from datetime import datetime, timezone
 
@@ -20,7 +21,7 @@ from app.channels import (
 from app.chat_generation import generate_chat_answer
 from app.column_mapping import resolve_column_mapping
 from app.database import SessionLocal
-from app.document_extraction import extract_document
+from app.document_extraction import format_extraction_summary, run_document_extraction
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.insight_delivery import collect_and_queue_digests
 from app.insights_generation import run_business_analysis
@@ -29,7 +30,6 @@ from app.models import (
     ChannelIdentity,
     ColumnMapping,
     DatasetProfile,
-    DocumentExtraction,
     Message,
     OutboundMessage,
     Report,
@@ -37,8 +37,8 @@ from app.models import (
 )
 from app.outbound import deliver_outbound_message
 from app.report_generation import generate_report, run_report_generation
-from app.storage import document_key_for, download_fileobj, key_for
-from app.whatsapp import send_text
+from app.storage import document_key_for, download_fileobj, key_for, upload_fileobj
+from app.whatsapp import download_media, send_text
 
 load_dotenv()
 
@@ -266,31 +266,16 @@ def extract_document_task(upload_session_id: str, dataset_type: str, mime_type: 
     DocumentExtraction for the user to review. Always lands on
     NEEDS_REVIEW -- extraction here is best-effort by design (see
     app/document_extraction.py's docstring), never auto-confirmed the way
-    a high-confidence CSV column mapping can skip review."""
+    a high-confidence CSV column mapping can skip review. Thin wrapper
+    around run_document_extraction, shared with v0.6 slice 4's WhatsApp
+    photo flow (handle_whatsapp_image_task below)."""
     db: Session = SessionLocal()
     upload_session = None
     try:
         upload_session = db.get(UploadSession, upload_session_id)
         if upload_session is None:
             return
-
-        key = document_key_for(upload_session.business_id, upload_session.id)
-        image_bytes = download_fileobj(key).read()
-
-        with propagate_attributes(session_id=str(upload_session_id)):
-            result = extract_document(image_bytes, dataset_type, mime_type=mime_type)
-
-        db.add(
-            DocumentExtraction(
-                upload_session_id=upload_session.id,
-                business_id=upload_session.business_id,
-                dataset_type=dataset_type,
-                extracted_rows=result["rows"],
-                overall_confidence=result["confidence"],
-            )
-        )
-        upload_session.status = "NEEDS_REVIEW"
-        db.commit()
+        run_document_extraction(db, upload_session, dataset_type, mime_type)
     except Exception:
         if upload_session is not None:
             _mark_failed(db, upload_session)
@@ -450,6 +435,84 @@ def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, co
         db.commit()
 
         _send_reply(db, business, identity, result.answer)
+    finally:
+        db.close()
+
+
+# v0.6 slice 4: "receipt/invoice photos sent in WhatsApp" (roadmap.md) --
+# always assumed to be an expense. There's no web-form-style field to ask
+# "which dataset is this?" over a photo message the way
+# app/routers/documents.py's upload form has, and a photographed
+# receipt/invoice IS an expense in the overwhelming common case, exactly
+# the framing the roadmap itself uses. See docs/decisions.md.
+WHATSAPP_DOCUMENT_DATASET_TYPE = "expenses"
+
+_MEDIA_DOWNLOAD_FAILED_REPLY = "I couldn't download that photo -- please try sending it again."
+
+
+@celery_app.task(name="handle_whatsapp_image")
+def handle_whatsapp_image_task(message_id: str, from_wa_id: str, media_id: str, mime_type: str):
+    """v0.6 slice 4: a photographed receipt/invoice sent in WhatsApp,
+    routed through the SAME v0.3 document-extraction pipeline the web
+    upload form uses (run_document_extraction) -- only the transport
+    (WhatsApp media, not a multipart upload) and the review step (a
+    conversational yes/no via confirm_document_review/cancel_document_
+    review, not a web review screen) differ. See docs/decisions.md.
+
+    Persists both a placeholder user Message ("[sent a photo]") and the
+    extraction-summary reply into the SAME Conversation/Message history
+    handle_whatsapp_message_task uses -- so when the owner's next text
+    message arrives, generate_chat_answer's history shows the model what
+    was proposed, the same way it sees any other earlier turn (see
+    docs/learning-guide.md 2.10)."""
+    db: Session = SessionLocal()
+    upload_session = None
+    try:
+        identity = resolve_identity(db, "whatsapp", from_wa_id)
+        if identity is None:
+            send_text(from_wa_id, _LINK_INSTRUCTIONS)
+            return
+
+        identity.last_inbound_at = datetime.now(timezone.utc)
+        business = db.get(Business, identity.business_id)
+        conversation = get_or_create_channel_conversation(db, identity)
+        db.add(Message(conversation_id=conversation.id, role="user", content="[sent a photo]"))
+        db.commit()
+
+        image_bytes = download_media(media_id)
+        if image_bytes is None:
+            db.add(Message(conversation_id=conversation.id, role="assistant", content=_MEDIA_DOWNLOAD_FAILED_REPLY))
+            db.commit()
+            _send_reply(db, business, identity, _MEDIA_DOWNLOAD_FAILED_REPLY)
+            return
+
+        upload_session = UploadSession(
+            business_id=identity.business_id,
+            source_type="document",
+            status="PROCESSING",
+            processing_started_at=datetime.now(timezone.utc),
+        )
+        db.add(upload_session)
+        db.flush()
+
+        key = document_key_for(identity.business_id, upload_session.id)
+        upload_session.document_url = upload_fileobj(io.BytesIO(image_bytes), key)
+        db.commit()
+
+        with propagate_attributes(
+            session_id=str(upload_session.id), metadata={"business_id": str(identity.business_id), "channel": "whatsapp"}
+        ):
+            extraction = run_document_extraction(db, upload_session, WHATSAPP_DOCUMENT_DATASET_TYPE, mime_type)
+
+        summary_text = format_extraction_summary(extraction.dataset_type, extraction.extracted_rows)
+        db.add(Message(conversation_id=conversation.id, role="assistant", content=summary_text))
+        db.commit()
+
+        _send_reply(db, business, identity, summary_text)
+    except Exception:
+        if upload_session is not None:
+            _mark_failed(db, upload_session)
+        raise
     finally:
         db.close()
 

@@ -1,7 +1,7 @@
-"""v0.6 slice 1 (roadmap.md "WhatsApp channel") -- a thin, dependency-free
-client for Meta's WhatsApp Cloud API (graph.facebook.com), plus the two pure
-functions that turn its wire format into something the rest of the app can
-use without knowing about Meta's JSON shape at all.
+"""v0.6 (roadmap.md "WhatsApp channel") -- a thin, dependency-free client
+for Meta's WhatsApp Cloud API (graph.facebook.com), plus the pure
+functions (parse_inbound) that turn its wire format into something the
+rest of the app can use without knowing about Meta's JSON shape at all.
 
 No SDK: the Cloud API is a handful of REST calls, and Meta's official SDKs
 are thin wrappers over exactly that -- pulling one in would be a dependency
@@ -97,6 +97,22 @@ class InboundMessage:
 
 
 @dataclass
+class InboundImage:
+    """One inbound WhatsApp photo (a photographed receipt/invoice, v0.6
+    slice 4), flattened the same way InboundMessage is for text. `media_id`
+    is NOT the image bytes -- WhatsApp only ever sends a reference; the
+    actual bytes need a separate download_media call, and only work while
+    the media id is still live on Meta's side (unbounded in practice, but
+    not a permanent URL -- see download_media)."""
+
+    message_id: str
+    from_wa_id: str
+    media_id: str
+    mime_type: str
+    caption: str | None = None
+
+
+@dataclass
 class StatusUpdate:
     """One delivery-status callback for a message THIS app previously
     sent -- `message_id` here is the provider id captured off that send's
@@ -112,6 +128,7 @@ class StatusUpdate:
 @dataclass
 class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
+    images: list[InboundImage] = field(default_factory=list)
     statuses: list[StatusUpdate] = field(default_factory=list)
 
 
@@ -120,8 +137,8 @@ def parse_inbound(payload: dict) -> ParsedWebhook:
     statuses}[]` shape into flat lists. Pure function, zero network --
     unit-tested against real captured webhook payload fixtures.
 
-    Deliberately ignores non-text message types (image/audio/location/etc
-    -- slice 4's concern)."""
+    Deliberately ignores non-text, non-image message types (audio/
+    location/etc -- no v0.6 slice covers them)."""
     result = ParsedWebhook()
 
     for entry in payload.get("entry", []):
@@ -130,22 +147,39 @@ def parse_inbound(payload: dict) -> ParsedWebhook:
             contacts = {c.get("wa_id"): c.get("profile", {}).get("name") for c in value.get("contacts", [])}
 
             for message in value.get("messages", []):
-                if message.get("type") != "text":
-                    continue
-                text_body = message.get("text", {}).get("body")
+                message_type = message.get("type")
                 from_wa_id = message.get("from")
                 message_id = message.get("id")
-                if not (text_body and from_wa_id and message_id):
+                if not (from_wa_id and message_id):
                     continue
-                result.messages.append(
-                    InboundMessage(
-                        message_id=message_id,
-                        from_wa_id=from_wa_id,
-                        text=text_body,
-                        contact_name=contacts.get(from_wa_id),
-                        timestamp=message.get("timestamp"),
+
+                if message_type == "text":
+                    text_body = message.get("text", {}).get("body")
+                    if not text_body:
+                        continue
+                    result.messages.append(
+                        InboundMessage(
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            text=text_body,
+                            contact_name=contacts.get(from_wa_id),
+                            timestamp=message.get("timestamp"),
+                        )
                     )
-                )
+                elif message_type == "image":
+                    image = message.get("image", {})
+                    media_id = image.get("id")
+                    if not media_id:
+                        continue
+                    result.images.append(
+                        InboundImage(
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            media_id=media_id,
+                            mime_type=image.get("mime_type") or "image/jpeg",
+                            caption=image.get("caption"),
+                        )
+                    )
 
             for status in value.get("statuses", []):
                 message_id = status.get("id")
@@ -202,6 +236,32 @@ def send_text(to: str, body: str) -> str | None:
     return _post_message(
         {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
     )
+
+
+def download_media(media_id: str) -> bytes | None:
+    """Downloads a WhatsApp-hosted media object (an inbound photo, v0.6
+    slice 4) -- a two-step Cloud API dance, not a direct fetch: WhatsApp's
+    webhook payload only ever contains an opaque media id, never a URL.
+    Step 1 resolves that id to a short-lived (a few minutes), one-time
+    download URL; step 2 fetches the actual bytes from it, using the SAME
+    bearer token both times (the download URL is on Meta's CDN but still
+    requires this app's own access token, not a public link). Returns
+    None (no-op) when unconfigured, same pattern as every other function
+    here."""
+    if not is_configured():
+        logger.info("whatsapp_media_download_skipped_unconfigured", media_id=media_id)
+        return None
+
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    media_response = httpx.get(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}", headers=headers, timeout=10.0)
+    media_response.raise_for_status()
+    download_url = media_response.json()["url"]
+
+    content_response = httpx.get(download_url, headers=headers, timeout=30.0)
+    content_response.raise_for_status()
+    return content_response.content
 
 
 def send_template(to: str, template_name: str, language: str, body_params: list[str]) -> str | None:

@@ -24,6 +24,7 @@ from app.data_entry import (
     propose_inventory_entry,
     propose_sale_entry,
 )
+from app.document_extraction import cancel_document_review, confirm_document_review
 from app.retrieval import retrieve_relevant_chunks
 
 load_dotenv()
@@ -195,6 +196,41 @@ _CANCEL_PENDING_ENTRY_SCHEMA = {
     },
 }
 
+# v0.6 slice 4 (roadmap.md "Media"): when the owner sends a photo of a
+# receipt/invoice, extraction happens automatically and OUTSIDE this tool
+# loop (app/tasks.py's handle_whatsapp_image_task) -- there is no
+# "propose_document" tool, since nothing here decided to extract it, the
+# image itself triggered it. These two tools are only how the owner's
+# NEXT message (confirming or rejecting what was extracted) gets acted on
+# -- the same "conversation history is the state" pattern
+# confirm_pending_entry/cancel_pending_entry use for text-described
+# entries. See docs/learning-guide.md 2.10.
+_CONFIRM_DOCUMENT_REVIEW_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "confirm_document_review",
+        "description": (
+            "Finalize the most recently extracted (not yet recorded) receipt/invoice photo -- "
+            "call this when the owner confirms the summary you (or rather, the extraction step) "
+            "sent them after they sent a photo (e.g. 'yes', 'correct', 'record it')."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+_CANCEL_DOCUMENT_REVIEW_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "cancel_document_review",
+        "description": (
+            "Discard the most recently extracted (not yet recorded) receipt/invoice photo "
+            "without recording it -- call this when the owner rejects it (e.g. 'no', 'wrong', "
+            "'discard that')."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
 
 @dataclass
 class ChatAnswer:
@@ -222,6 +258,11 @@ def _system_prompt(business) -> str:
         "confirm_pending_entry. If they reject or correct it (e.g. 'no', 'wrong'), call "
         "cancel_pending_entry -- then propose_*_entry again with the corrected details if they "
         "gave them.\n"
+        "- If the owner just sent a photo of a receipt/invoice, it's automatically extracted "
+        "and you'll see a summary of what was found already in the conversation, asking them to "
+        "confirm. On their next message, if they confirm (e.g. 'yes', 'correct'), call "
+        "confirm_document_review. If they reject it (e.g. 'no', 'wrong'), call "
+        "cancel_document_review.\n"
         "- Resolve relative dates ('this month', 'last week') into explicit date ranges "
         "using today's date.\n"
         "- If the tools return no relevant data, say so plainly rather than guessing.\n"
@@ -251,6 +292,10 @@ def _execute(db: Session, business_id: uuid.UUID, name: str, arguments: dict) ->
         return confirm_pending_entry(db, business_id)
     if name == "cancel_pending_entry":
         return cancel_pending_entry(db, business_id)
+    if name == "confirm_document_review":
+        return confirm_document_review(db, business_id)
+    if name == "cancel_document_review":
+        return cancel_document_review(db, business_id)
     return execute_tool(db, business_id, name, arguments)
 
 
@@ -273,6 +318,8 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
         _PROPOSE_INVENTORY_ENTRY_SCHEMA,
         _CONFIRM_PENDING_ENTRY_SCHEMA,
         _CANCEL_PENDING_ENTRY_SCHEMA,
+        _CONFIRM_DOCUMENT_REVIEW_SCHEMA,
+        _CANCEL_DOCUMENT_REVIEW_SCHEMA,
     ]
 
     messages = [{"role": "system", "content": _system_prompt(business)}, *history, {"role": "user", "content": question}]

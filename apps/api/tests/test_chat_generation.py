@@ -310,6 +310,82 @@ def test_propose_sale_entry_missing_required_field_is_fed_back_not_raised(monkey
     assert "error" in json.loads(tool_messages[0]["content"])
 
 
+def _seed_needs_review_document(db_session, business):
+    from app.models import DocumentExtraction, UploadSession as UploadSessionModel
+
+    session = UploadSessionModel(business_id=business.id, source_type="document", status="NEEDS_REVIEW")
+    db_session.add(session)
+    db_session.flush()
+    db_session.add(
+        DocumentExtraction(
+            upload_session_id=session.id,
+            business_id=business.id,
+            dataset_type="expenses",
+            extracted_rows=[{"vendor": "Power Co", "amount": "150.0"}],
+        )
+    )
+    db_session.flush()
+    return session
+
+
+def test_confirm_document_review_tool_records_the_expense(monkeypatch, db_session):
+    """v0.6 slice 4: the model reads its own extraction-summary message
+    (already in history, per app/tasks.py's handle_whatsapp_image_task)
+    and confirms it -- the same conversation-history-as-state pattern
+    slice 3's confirm_pending_entry uses. See docs/learning-guide.md 2.10."""
+    business = _seed_business(db_session)
+    _seed_needs_review_document(db_session, business)
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("confirm_document_review", {})]),
+            _model_turn(content="Recorded the expense."),
+        ],
+    )
+
+    history = [
+        {"role": "user", "content": "[sent a photo]"},
+        {"role": "assistant", "content": "I found 1 item: vendor: Power Co, amount: 150.0. Reply YES to confirm."},
+    ]
+    result = generate_chat_answer(db_session, business, "yes", history=history)
+
+    assert result.answer == "Recorded the expense."
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    tool_result = json.loads(tool_messages[0]["content"])
+    assert tool_result["confirmed"] is True
+
+    from app.models import Expense, UploadSession as UploadSessionModel
+
+    expense = db_session.query(Expense).one()
+    assert expense.vendor == "Power Co"
+    session = db_session.query(UploadSessionModel).filter(UploadSessionModel.source_type == "document").one()
+    assert session.status == "COMPLETED"
+
+
+def test_cancel_document_review_tool_discards_without_recording(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(db_session, business)
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("cancel_document_review", {})]),
+            _model_turn(content="Okay, discarded that receipt."),
+        ],
+    )
+
+    history = [
+        {"role": "user", "content": "[sent a photo]"},
+        {"role": "assistant", "content": "I found 1 item: vendor: Power Co, amount: 150.0. Reply YES to confirm."},
+    ]
+    result = generate_chat_answer(db_session, business, "no that's not right", history=history)
+
+    assert result.answer == "Okay, discarded that receipt."
+
+    from app.models import Expense
+
+    assert db_session.query(Expense).count() == 0
+
+
 def test_round_cap_forces_final_answer_without_tools(monkeypatch, db_session):
     business = _seed_business(db_session)
     completions = FakeCompletions([])

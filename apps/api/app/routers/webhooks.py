@@ -74,7 +74,7 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
     # Imported lazily: app.tasks imports a wide swath of the app (report
     # generation, insights, document extraction) that this module has no
     # other reason to pull in at import time.
-    from app.tasks import handle_whatsapp_message_task
+    from app.tasks import handle_whatsapp_image_task, handle_whatsapp_message_task
 
     for message in parsed.messages:
         db.add(WebhookEvent(provider="whatsapp", external_id=message.message_id, payload=payload))
@@ -95,6 +95,24 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
             # surfaced to Meta as a webhook failure, same reasoning as the
             # require_worker_online skip above.
             logger.error("whatsapp_webhook_enqueue_failed", message_id=message.message_id, exc_info=True)
+
+    # v0.6 slice 4: a photographed receipt/invoice -- same idempotency-
+    # then-enqueue shape as text messages above (images arrive as their
+    # own messages[] entries too, with type="image" instead of "text", so
+    # they share the exact same webhook-level dedup key: Meta's message
+    # id).
+    for image in parsed.images:
+        db.add(WebhookEvent(provider="whatsapp", external_id=image.message_id, payload=payload))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+
+        try:
+            handle_whatsapp_image_task.delay(image.message_id, image.from_wa_id, image.media_id, image.mime_type)
+        except Exception:
+            logger.error("whatsapp_webhook_image_enqueue_failed", message_id=image.message_id, exc_info=True)
 
     # v0.6 slice 2: delivery-status callbacks for messages THIS app sent.
     # Applied directly, not enqueued -- a status update is a fast, pure DB

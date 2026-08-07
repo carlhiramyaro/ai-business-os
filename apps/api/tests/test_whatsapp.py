@@ -10,7 +10,7 @@ import json
 
 import app.whatsapp as whatsapp
 from app.channels import format_for_channel
-from app.whatsapp import parse_inbound, send_template, send_text, verify_signature
+from app.whatsapp import download_media, parse_inbound, send_template, send_text, verify_signature
 
 APP_SECRET = "test-app-secret"
 
@@ -157,7 +157,7 @@ def test_parse_inbound_extracts_status_error_on_failure():
     assert status.error == "Message undeliverable"
 
 
-def test_parse_inbound_ignores_non_text_messages():
+def test_parse_inbound_ignores_image_message_missing_media_id():
     payload = {
         "entry": [
             {
@@ -171,11 +171,96 @@ def test_parse_inbound_ignores_non_text_messages():
             }
         ]
     }
-    assert parse_inbound(payload).messages == []
+    parsed = parse_inbound(payload)
+    assert parsed.messages == []
+    assert parsed.images == []
+
+
+def test_parse_inbound_ignores_other_message_types():
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [{"from": "233241234567", "id": "wamid.XYZ", "type": "audio"}],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    parsed = parse_inbound(payload)
+    assert parsed.messages == []
+    assert parsed.images == []
+
+
+def test_parse_inbound_extracts_image_message():
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "from": "233241234567",
+                                    "id": "wamid.IMG1",
+                                    "type": "image",
+                                    "image": {
+                                        "id": "MEDIA_ID_123",
+                                        "mime_type": "image/jpeg",
+                                        "sha256": "abc",
+                                        "caption": "electricity bill",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    parsed = parse_inbound(payload)
+    assert parsed.messages == []
+    [image] = parsed.images
+    assert image.message_id == "wamid.IMG1"
+    assert image.from_wa_id == "233241234567"
+    assert image.media_id == "MEDIA_ID_123"
+    assert image.mime_type == "image/jpeg"
+    assert image.caption == "electricity bill"
+
+
+def test_parse_inbound_image_defaults_mime_type_when_missing():
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "from": "233241234567",
+                                    "id": "wamid.IMG2",
+                                    "type": "image",
+                                    "image": {"id": "MEDIA_ID_456"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    [image] = parse_inbound(payload).images
+    assert image.mime_type == "image/jpeg"
+    assert image.caption is None
 
 
 def test_parse_inbound_handles_empty_payload():
-    assert parse_inbound({}).messages == []
+    parsed = parse_inbound({})
+    assert parsed.messages == []
+    assert parsed.images == []
 
 
 def test_format_for_channel_converts_markdown_to_whatsapp_syntax():
@@ -272,3 +357,53 @@ def test_send_template_posts_expected_payload(monkeypatch):
     assert captured["json"]["template"]["components"] == [
         {"type": "body", "parameters": [{"type": "text", "text": "3"}]}
     ]
+
+
+# --- download_media: v0.6 slice 4 ---------------------------------------
+
+
+class _FakeMediaInfoResponse:
+    def __init__(self, url):
+        self._url = url
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"url": self._url, "mime_type": "image/jpeg", "id": "MEDIA123"}
+
+
+class _FakeMediaContentResponse:
+    def __init__(self, content):
+        self.content = content
+
+    def raise_for_status(self):
+        pass
+
+
+def test_download_media_returns_none_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_PHONE_NUMBER_ID", raising=False)
+    assert download_media("MEDIA123") is None
+
+
+def test_download_media_two_step_fetch(monkeypatch):
+    _configure_whatsapp(monkeypatch)
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers))
+        if "graph.facebook.com" in url and "MEDIA123" in url:
+            return _FakeMediaInfoResponse("https://cdn.example.com/download/xyz")
+        return _FakeMediaContentResponse(b"fake-image-bytes")
+
+    monkeypatch.setattr(whatsapp.httpx, "get", fake_get)
+
+    result = download_media("MEDIA123")
+
+    assert result == b"fake-image-bytes"
+    assert len(calls) == 2
+    # Both requests carry the same bearer token -- the CDN download URL
+    # still requires it, it isn't a public link.
+    assert calls[0][1]["Authorization"] == "Bearer token-abc"
+    assert calls[1][0] == "https://cdn.example.com/download/xyz"
+    assert calls[1][1]["Authorization"] == "Bearer token-abc"

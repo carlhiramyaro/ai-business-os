@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_owned_business, require_worker_online
-from app.ingestion import RECORD_FIELD_MAP, ingest_rows
+from app.document_extraction import commit_document_extraction
 from app.models import Business, DocumentExtraction, UploadSession
 from app.rate_limit import RateLimit
 from app.schemas.documents import (
@@ -137,18 +137,6 @@ def confirm_document(
     db: Session = Depends(get_db),
 ):
     extraction = _get_extraction(db, session)
-
-    field_map = RECORD_FIELD_MAP[extraction.dataset_type]
-    rows = [
-        {field_map[field]: value for field, value in row.items() if field in field_map}
-        for row in extraction.extracted_rows
-    ]
-
-    summary = ingest_rows(db, session.business_id, session.id, extraction.dataset_type, rows)
-    if summary.duplicate_count:
-        session.duplicate_warning = True
-    session.status = "COMPLETED"
-    session.completed_at = datetime.now(timezone.utc)
-    db.commit()
+    commit_document_extraction(db, session, extraction)
 
     return DocumentConfirmResponse(status=session.status, duplicate_warning=session.duplicate_warning)
