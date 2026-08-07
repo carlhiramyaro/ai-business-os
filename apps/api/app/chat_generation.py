@@ -17,6 +17,13 @@ from sqlalchemy.orm import Session
 
 from app.business_facts import remember_fact
 from app.chat_tools import TOOL_SCHEMAS, ToolArgumentError, execute_tool
+from app.data_entry import (
+    cancel_pending_entry,
+    confirm_pending_entry,
+    propose_expense_entry,
+    propose_inventory_entry,
+    propose_sale_entry,
+)
 from app.retrieval import retrieve_relevant_chunks
 
 load_dotenv()
@@ -68,6 +75,126 @@ _REMEMBER_FACT_SCHEMA = {
     },
 }
 
+# v0.6 slice 3 (roadmap.md "Data entry by message"): propose_*_entry
+# stages a row (app/data_entry.py), it does NOT write to sales/expenses/
+# inventory yet -- confirm_pending_entry does that, on a LATER call once
+# the owner has said something like "yes". All five dispatch through
+# _execute below; casting/total-computation happens in app/data_entry.py,
+# never here or in the model's own arithmetic.
+_PROPOSE_SALE_ENTRY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "propose_sale_entry",
+        "description": (
+            "Stage a sale for confirmation -- use when the owner describes a sale they made "
+            "(e.g. 'sold 3 bags of rice at 50 each'). Does NOT record anything yet; after "
+            "calling this, tell the owner the proposed entry (use the tool result's `summary` "
+            "verbatim -- don't recompute the total yourself) and ask them to confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {"type": "string", "description": "What was sold."},
+                "quantity": {"type": "integer", "description": "How many units."},
+                "unit_price": {"type": "number", "description": "Price per unit, if mentioned."},
+                "discount": {"type": "number", "description": "Discount amount, if mentioned."},
+                "total_amount": {
+                    "type": "number",
+                    "description": "Total sale amount, ONLY if the owner stated it directly -- omit to let it be computed from quantity/unit_price/discount.",
+                },
+                "sale_date": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD), resolved from relative terms like 'today'/'yesterday' using today's date. Omit for today.",
+                },
+                "category": {"type": "string"},
+                "customer_name": {"type": "string"},
+                "customer_phone": {"type": "string"},
+                "payment_method": {"type": "string"},
+            },
+            "required": ["product_name", "quantity"],
+        },
+    },
+}
+
+_PROPOSE_EXPENSE_ENTRY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "propose_expense_entry",
+        "description": (
+            "Stage an expense for confirmation -- use when the owner describes money they "
+            "spent (e.g. 'paid 200 for electricity'). Does NOT record anything yet; after "
+            "calling this, relay the tool result's `summary` verbatim and ask the owner to "
+            "confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Expense category, e.g. 'Utilities', 'Rent'."},
+                "amount": {"type": "number"},
+                "vendor": {"type": "string"},
+                "expense_date": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD), resolved from relative terms using today's date. Omit for today.",
+                },
+                "description": {"type": "string"},
+            },
+            "required": ["category", "amount"],
+        },
+    },
+}
+
+_PROPOSE_INVENTORY_ENTRY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "propose_inventory_entry",
+        "description": (
+            "Stage an inventory update for confirmation -- use when the owner describes stock "
+            "on hand or a restock (e.g. 'got 50 more bags of rice'). Does NOT record anything "
+            "yet; after calling this, relay the tool result's `summary` verbatim and ask the "
+            "owner to confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {"type": "string"},
+                "quantity": {"type": "integer", "description": "The resulting quantity on hand, not a delta."},
+                "category": {"type": "string"},
+                "reorder_level": {"type": "integer"},
+                "supplier": {"type": "string"},
+                "cost_price": {"type": "number"},
+                "selling_price": {"type": "number"},
+            },
+            "required": ["product_name", "quantity"],
+        },
+    },
+}
+
+_CONFIRM_PENDING_ENTRY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "confirm_pending_entry",
+        "description": (
+            "Finalize the most recently proposed (not yet recorded) sale/expense/inventory "
+            "entry -- call this when the owner confirms a proposal you made earlier in this "
+            "conversation (e.g. 'yes', 'correct', 'confirm')."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+_CANCEL_PENDING_ENTRY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "cancel_pending_entry",
+        "description": (
+            "Discard the most recently proposed (not yet recorded) sale/expense/inventory "
+            "entry without recording it -- call this when the owner rejects or cancels a "
+            "proposal you made earlier in this conversation (e.g. 'no', 'cancel', 'that's wrong')."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
 
 @dataclass
 class ChatAnswer:
@@ -87,6 +214,14 @@ def _system_prompt(business) -> str:
         "- When the owner states something durable about the business that isn't just "
         "answering your current question (a seasonal pattern, a recurring supplier issue, a "
         "customer preference), call remember_business_fact to save it for future conversations.\n"
+        "- When the owner describes a sale, expense, or inventory change (e.g. 'sold 3 bags of "
+        "rice at 50 each', 'paid 200 for electricity'), call the matching propose_*_entry tool. "
+        "This only STAGES the entry -- relay the tool result's `summary` field to the owner "
+        "verbatim (never recompute the total yourself) and ask them to confirm before it's "
+        "recorded. If their next message confirms it (e.g. 'yes', 'correct'), call "
+        "confirm_pending_entry. If they reject or correct it (e.g. 'no', 'wrong'), call "
+        "cancel_pending_entry -- then propose_*_entry again with the corrected details if they "
+        "gave them.\n"
         "- Resolve relative dates ('this month', 'last week') into explicit date ranges "
         "using today's date.\n"
         "- If the tools return no relevant data, say so plainly rather than guessing.\n"
@@ -106,6 +241,16 @@ def _execute(db: Session, business_id: uuid.UUID, name: str, arguments: dict) ->
             raise ToolArgumentError("fact must be a non-empty string")
         remember_fact(db, business_id, fact.strip())
         return {"saved": True}
+    if name == "propose_sale_entry":
+        return propose_sale_entry(db, business_id, arguments)
+    if name == "propose_expense_entry":
+        return propose_expense_entry(db, business_id, arguments)
+    if name == "propose_inventory_entry":
+        return propose_inventory_entry(db, business_id, arguments)
+    if name == "confirm_pending_entry":
+        return confirm_pending_entry(db, business_id)
+    if name == "cancel_pending_entry":
+        return cancel_pending_entry(db, business_id)
     return execute_tool(db, business_id, name, arguments)
 
 
@@ -119,7 +264,16 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
     made, so the API can show which queries backed the figures."""
     client = OpenAI()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    tools = [*TOOL_SCHEMAS, _SEARCH_CONTEXT_SCHEMA, _REMEMBER_FACT_SCHEMA]
+    tools = [
+        *TOOL_SCHEMAS,
+        _SEARCH_CONTEXT_SCHEMA,
+        _REMEMBER_FACT_SCHEMA,
+        _PROPOSE_SALE_ENTRY_SCHEMA,
+        _PROPOSE_EXPENSE_ENTRY_SCHEMA,
+        _PROPOSE_INVENTORY_ENTRY_SCHEMA,
+        _CONFIRM_PENDING_ENTRY_SCHEMA,
+        _CANCEL_PENDING_ENTRY_SCHEMA,
+    ]
 
     messages = [{"role": "system", "content": _system_prompt(business)}, *history, {"role": "user", "content": question}]
     executed: list[dict] = []

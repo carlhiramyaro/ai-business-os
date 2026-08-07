@@ -76,6 +76,27 @@ DEDUP_FIELDS = {
 }
 
 
+def compute_sale_total(quantity, unit_price, discount=None) -> Decimal | None:
+    """quantity * unitPrice - discount -- the one deterministic computation
+    this app ever does for a sale total when it's omitted, not an LLM
+    guess (CLAUDE.md's deterministic-vs-LLM rule). Shared by
+    app/routers/entries.py (quantity/unit_price/discount already
+    Pydantic-typed) and app/data_entry.py (raw values straight out of an
+    LLM tool call's JSON arguments) -- accepts anything `Decimal(str(...))`
+    can parse so both call sites can hand it whatever type they have.
+    Returns None if quantity or unit_price is missing -- there's nothing
+    to compute yet, not zero."""
+    if quantity is None or unit_price is None:
+        return None
+    try:
+        quantity_dec = Decimal(str(quantity))
+        unit_price_dec = Decimal(str(unit_price))
+        discount_dec = Decimal(str(discount)) if discount is not None else Decimal(0)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return quantity_dec * unit_price_dec - discount_dec
+
+
 @dataclass
 class IngestSummary:
     inserted: int

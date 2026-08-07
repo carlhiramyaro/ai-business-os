@@ -187,6 +187,129 @@ def test_remember_business_fact_empty_fact_is_fed_back_not_raised(monkeypatch, d
     assert "error" in json.loads(tool_messages[0]["content"])
 
 
+def test_propose_sale_entry_tool_stages_without_recording(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(
+                tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Beans", "quantity": 2, "unit_price": 50})]
+            ),
+            _model_turn(content="I'll record 2 x Beans @ 50 = 100 total. Confirm?"),
+        ],
+    )
+
+    result = generate_chat_answer(db_session, business, "sold 2 bags of beans at 50 each", history=[])
+
+    assert "Confirm" in result.answer
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    tool_result = json.loads(tool_messages[0]["content"])
+    assert tool_result["proposed"] is True
+    assert "100" in tool_result["summary"]
+
+    from app.models import PendingEntry, Sale
+
+    # _seed_business already seeded one Sale (Rice) -- this asserts nothing
+    # NEW was recorded, not that the table is empty.
+    assert db_session.query(Sale).count() == 1
+    entry = db_session.query(PendingEntry).one()
+    assert entry.status == "pending"
+    assert entry.fields["product_name"] == "Beans"
+
+
+def test_confirm_pending_entry_tool_records_the_sale_on_a_later_turn(monkeypatch, db_session):
+    """Two SEPARATE generate_chat_answer calls, sharing the same db_session
+    -- simulating two real conversation turns (the propose reply, then the
+    owner's "yes" as the next inbound message). The confirm decision comes
+    entirely from the model reading its own prior proposal in `history`,
+    exactly like any other follow-up question -- no bespoke state machine."""
+    business = _seed_business(db_session)
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(
+                tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Beans", "quantity": 2, "unit_price": 50})]
+            ),
+            _model_turn(content="I'll record 2 x Beans @ 50 = 100 total. Confirm?"),
+        ],
+    )
+    proposal = generate_chat_answer(db_session, business, "sold 2 bags of beans at 50 each", history=[])
+
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("confirm_pending_entry", {})]),
+            _model_turn(content="Recorded!"),
+        ],
+    )
+    history = [
+        {"role": "user", "content": "sold 2 bags of beans at 50 each"},
+        {"role": "assistant", "content": proposal.answer},
+    ]
+    result = generate_chat_answer(db_session, business, "yes", history=history)
+
+    assert result.answer == "Recorded!"
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    tool_result = json.loads(tool_messages[0]["content"])
+    assert tool_result["confirmed"] is True
+
+    from app.models import PendingEntry, Sale
+
+    # _seed_business already seeded one Sale (Rice); this confirms a
+    # SECOND, new one for Beans.
+    sale = db_session.query(Sale).filter(Sale.product_name == "Beans").one()
+    assert sale.quantity == 2
+    entry = db_session.query(PendingEntry).one()
+    assert entry.status == "confirmed"
+
+
+def test_cancel_pending_entry_tool_discards_the_proposal(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Beans", "quantity": 2})]),
+            _model_turn(content="I'll record 2 x Beans. Confirm?"),
+        ],
+    )
+    generate_chat_answer(db_session, business, "sold 2 bags of beans", history=[])
+
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("cancel_pending_entry", {})]),
+            _model_turn(content="Okay, discarded."),
+        ],
+    )
+    result = generate_chat_answer(db_session, business, "no that's wrong", history=[])
+
+    assert result.answer == "Okay, discarded."
+
+    from app.models import PendingEntry, Sale
+
+    # Still just _seed_business's original Sale (Rice) -- nothing new.
+    assert db_session.query(Sale).count() == 1
+    entry = db_session.query(PendingEntry).one()
+    assert entry.status == "cancelled"
+
+
+def test_propose_sale_entry_missing_required_field_is_fed_back_not_raised(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    completions = _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Beans"})]),
+            _model_turn(content="How many did you sell?"),
+        ],
+    )
+
+    result = generate_chat_answer(db_session, business, "sold some beans", history=[])
+
+    assert result.answer == "How many did you sell?"
+    tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
+    assert "error" in json.loads(tool_messages[0]["content"])
+
+
 def test_round_cap_forces_final_answer_without_tools(monkeypatch, db_session):
     business = _seed_business(db_session)
     completions = FakeCompletions([])

@@ -15,11 +15,23 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+import app.chat_generation as chat_generation
 import app.outbound as outbound
 import app.tasks as tasks
 from app.chat_generation import ChatAnswer
 from app.database import get_db
-from app.models import Business, ChannelIdentity, Conversation, Message, OutboundMessage, User, WebhookEvent
+from app.models import (
+    Business,
+    ChannelIdentity,
+    Conversation,
+    Message,
+    OutboundMessage,
+    PendingEntry,
+    Sale,
+    UploadSession,
+    User,
+    WebhookEvent,
+)
 from app.security import create_access_token, hash_password
 from main import app
 from tests.conftest import TestSessionLocal
@@ -69,6 +81,10 @@ def _patch_env_and_tasks(monkeypatch):
         db.query(Conversation).delete()
         db.query(ChannelIdentity).delete()
         db.query(WebhookEvent).delete()
+        # v0.6 slice 3: FK'd to Business, so must clear before it.
+        db.query(PendingEntry).delete()
+        db.query(Sale).delete()
+        db.query(UploadSession).delete()
         db.query(Business).delete()
         db.query(User).delete()
         db.commit()
@@ -318,3 +334,92 @@ def test_status_callback_records_failure_reason(real_client, linked_identity):
         assert message.status == "failed"
         assert message.error == "Message undeliverable"
         assert message.failed_at is not None
+
+
+# --- v0.6 slice 3: data entry by message, end-to-end through the real webhook/task pipeline ---
+
+
+def _tool_call(name, arguments):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=f"call_{uuid.uuid4().hex[:8]}", function=SimpleNamespace(name=name, arguments=json.dumps(arguments))
+    )
+
+
+def _model_turn(content=None, tool_calls=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))])
+
+
+class _FakeCompletions:
+    def __init__(self, scripted_turns):
+        self.scripted_turns = list(scripted_turns)
+
+    def create(self, **kwargs):
+        if len(self.scripted_turns) > 1:
+            return self.scripted_turns.pop(0)
+        return self.scripted_turns[0]
+
+
+def _fake_openai(monkeypatch, scripted_turns):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        chat_generation,
+        "OpenAI",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions(scripted_turns))),
+    )
+
+
+def test_data_entry_propose_then_confirm_across_two_whatsapp_messages(monkeypatch, real_client, linked_identity):
+    """The real generate_chat_answer (only the OpenAI client faked) end to
+    end through the actual webhook -> Celery task -> chat agent -> data
+    entry pipeline -- two separate inbound WhatsApp messages, exactly as
+    they'd arrive as two separate webhook deliveries."""
+    business_id, external_id = linked_identity
+    monkeypatch.setattr(tasks, "generate_chat_answer", chat_generation.generate_chat_answer)
+
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(
+                tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Rice", "quantity": 3, "unit_price": 50})]
+            ),
+            _model_turn(content="I'll record 3 x Rice @ 50 = 150 total. Reply YES to confirm."),
+        ],
+    )
+    payload = _text_message_payload("wamid.propose1", external_id, "sold 3 bags of rice at 50 each")
+    body = json.dumps(payload).encode()
+    response = real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+    assert response.status_code == 200
+
+    with TestSessionLocal() as db:
+        assert db.query(Sale).count() == 0
+        entry = db.query(PendingEntry).one()
+        assert entry.status == "pending"
+
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(tool_calls=[_tool_call("confirm_pending_entry", {})]),
+            _model_turn(content="Recorded! 3 x Rice for 150."),
+        ],
+    )
+    payload = _text_message_payload("wamid.confirm1", external_id, "yes")
+    body = json.dumps(payload).encode()
+    response = real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+    assert response.status_code == 200
+
+    with TestSessionLocal() as db:
+        sale = db.query(Sale).one()
+        assert sale.product_name == "Rice"
+        assert sale.quantity == 3
+        entry = db.query(PendingEntry).one()
+        assert entry.status == "confirmed"
+
+    assert len(SENT_MESSAGES) == 2
+    assert "150" in SENT_MESSAGES[0][1]
+    assert "Recorded" in SENT_MESSAGES[1][1]
+

@@ -1,12 +1,11 @@
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_owned_business
-from app.ingestion import ingest_rows
+from app.ingestion import compute_sale_total, ingest_rows
 from app.models import Business, UploadSession
 from app.schemas.entries import EntryCreateResponse, ExpenseEntry, InventoryEntry, SaleEntry
 
@@ -47,9 +46,8 @@ def create_sale_entry(
 ):
     row = payload.model_dump()
 
-    if row["total_amount"] is None and row["quantity"] is not None and row["unit_price"] is not None:
-        discount = row["discount"] or Decimal(0)
-        row["total_amount"] = Decimal(row["quantity"]) * row["unit_price"] - discount
+    if row["total_amount"] is None:
+        row["total_amount"] = compute_sale_total(row["quantity"], row["unit_price"], row["discount"])
 
     session = _create_manual_session(db, business)
     summary = ingest_rows(db, business.id, session.id, "sales", [row])
