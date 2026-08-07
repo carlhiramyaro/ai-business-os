@@ -97,19 +97,31 @@ class InboundMessage:
 
 
 @dataclass
+class StatusUpdate:
+    """One delivery-status callback for a message THIS app previously
+    sent -- `message_id` here is the provider id captured off that send's
+    response (app/models/channel.py's OutboundMessage.provider_message_id),
+    used to correlate the callback back to that row. v0.6 slice 2."""
+
+    message_id: str
+    status: str  # "sent" | "delivered" | "read" | "failed"
+    recipient_id: str | None = None
+    error: str | None = None
+
+
+@dataclass
 class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
+    statuses: list[StatusUpdate] = field(default_factory=list)
 
 
 def parse_inbound(payload: dict) -> ParsedWebhook:
-    """Flattens Meta's `entry[].changes[].value.{messages,contacts}[]`
-    shape into a flat list of InboundMessage. Pure function, zero network --
+    """Flattens Meta's `entry[].changes[].value.{messages,contacts,
+    statuses}[]` shape into flat lists. Pure function, zero network --
     unit-tested against real captured webhook payload fixtures.
 
-    Deliberately ignores non-text message types (image/audio/location/etc,
-    slice 4's concern) and `statuses[]` delivery-receipt callbacks (slice
-    2's concern) -- both are valid payloads this function will simply
-    return no messages for, not an error."""
+    Deliberately ignores non-text message types (image/audio/location/etc
+    -- slice 4's concern)."""
     result = ParsedWebhook()
 
     for entry in payload.get("entry", []):
@@ -135,36 +147,85 @@ def parse_inbound(payload: dict) -> ParsedWebhook:
                     )
                 )
 
+            for status in value.get("statuses", []):
+                message_id = status.get("id")
+                status_value = status.get("status")
+                if not (message_id and status_value):
+                    continue
+                errors = status.get("errors") or []
+                error_text = "; ".join(e.get("title", str(e)) for e in errors) if errors else None
+                result.statuses.append(
+                    StatusUpdate(
+                        message_id=message_id,
+                        status=status_value,
+                        recipient_id=status.get("recipient_id"),
+                        error=error_text,
+                    )
+                )
+
     return result
 
 
-def send_text(to: str, body: str) -> None:
-    """Sends one outbound text message. No-ops (logs and returns) when
-    unconfigured -- see module docstring. Raises on a non-2xx from Meta;
-    callers (app/tasks.py) run inside a Celery task, so a raised exception
-    becomes a normal Celery-visible failure (Sentry capture, retry
-    eligibility) rather than something that needs its own handling here.
-
-    Doesn't chunk `body` itself -- app/channels.py's format_for_channel
-    already splits at MAX_MESSAGE_LENGTH before this is called, so each
-    call here is always one WhatsApp message."""
+def _post_message(json_body: dict) -> str | None:
+    """Shared POST to the Cloud API's /messages endpoint for both
+    send_text and send_template. Returns the provider's message id from a
+    successful response, or None if skipped (unconfigured). Raises on a
+    non-2xx from Meta -- callers run inside a Celery task, so a raised
+    exception becomes a normal Celery-visible failure (Sentry capture,
+    retry eligibility) rather than something that needs its own handling
+    here."""
     if not is_configured():
-        logger.info("whatsapp_send_skipped_unconfigured", to=to)
-        return
+        logger.info("whatsapp_send_skipped_unconfigured", to=json_body.get("to"))
+        return None
 
     phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
     access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages"
 
     response = httpx.post(
-        url,
-        headers={"Authorization": f"Bearer {access_token}"},
-        json={
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": body},
-        },
-        timeout=10.0,
+        url, headers={"Authorization": f"Bearer {access_token}"}, json=json_body, timeout=10.0
     )
     response.raise_for_status()
+    return response.json()["messages"][0]["id"]
+
+
+def send_text(to: str, body: str) -> str | None:
+    """Sends one free-form ("session") text message -- only valid inside
+    WhatsApp's 24h customer-service window (app/outbound.py's
+    within_session_window decides which of send_text/send_template a given
+    send should use). Returns the provider's message id, or None if
+    skipped (unconfigured).
+
+    Doesn't chunk `body` itself -- app/channels.py's format_for_channel
+    already splits at MAX_MESSAGE_LENGTH before this is called, so each
+    call here is always one WhatsApp message."""
+    return _post_message(
+        {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
+    )
+
+
+def send_template(to: str, template_name: str, language: str, body_params: list[str]) -> str | None:
+    """Sends a pre-approved template ("HSM") message -- the only kind
+    Meta allows outside the 24h session window. A template's static text
+    is fixed at approval time; `body_params` fill its `{{1}}`, `{{2}}`...
+    placeholders in order. This is why proactive delivery outside the
+    window can only ever say something generic ("you have N new
+    insights") and never the actual AI-generated insight text -- that
+    text was never submitted for template approval, and can't be. See
+    docs/decisions.md and docs/learning-guide.md."""
+    return _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language},
+                "components": [
+                    {"type": "body", "parameters": [{"type": "text", "text": p} for p in body_params]}
+                ]
+                if body_params
+                else [],
+            },
+        }
+    )

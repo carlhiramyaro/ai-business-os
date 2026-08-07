@@ -22,8 +22,20 @@ from app.column_mapping import resolve_column_mapping
 from app.database import SessionLocal
 from app.document_extraction import extract_document
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
+from app.insight_delivery import collect_and_queue_digests
 from app.insights_generation import run_business_analysis
-from app.models import Business, ColumnMapping, DatasetProfile, DocumentExtraction, Message, Report, UploadSession
+from app.models import (
+    Business,
+    ChannelIdentity,
+    ColumnMapping,
+    DatasetProfile,
+    DocumentExtraction,
+    Message,
+    OutboundMessage,
+    Report,
+    UploadSession,
+)
+from app.outbound import deliver_outbound_message
 from app.report_generation import generate_report, run_report_generation
 from app.storage import document_key_for, download_fileobj, key_for
 from app.whatsapp import send_text
@@ -329,11 +341,39 @@ _LINK_INSTRUCTIONS = (
 _LINK_INVALID = "That code isn't valid or has expired. Generate a new one from Settings and try again."
 
 
+def _send_reply(db: Session, business: Business, identity: ChannelIdentity, text: str) -> None:
+    """Sends a chat reply through the same queue/audit/delivery-status
+    infrastructure v0.6 slice 2 introduced for proactive sends
+    (app/outbound.py) -- one OutboundMessage row per WhatsApp message
+    chunk, so delivery status is meaningful for every message this app
+    sends, not just insight pushes. Delivered INLINE (deliver_outbound_
+    message called directly, not via send_outbound_message_task.delay())
+    rather than re-queued: this function already runs inside a background
+    task, so a second queue hop would only add latency for a reply the
+    owner is actively waiting on. Insight pushes queue instead, because
+    they have no one waiting synchronously. See docs/decisions.md."""
+    for part in format_for_channel(text, "whatsapp"):
+        message = OutboundMessage(
+            business_id=business.id,
+            channel_identity_id=identity.id,
+            channel="whatsapp",
+            kind="chat_reply",
+            body=part,
+            send_method="session",
+            status="queued",
+        )
+        db.add(message)
+        db.flush()
+        deliver_outbound_message(db, message, identity)
+        db.commit()
+
+
 def _handle_unlinked_message(db: Session, from_wa_id: str, text: str, contact_name: str | None) -> None:
     """No ChannelIdentity exists yet for this number -- the only thing a
     message from it can mean is "this is a link code" or "this number
-    hasn't been linked." Never touches business data (there's no business
-    to touch: this is the pre-linking state by definition)."""
+    hasn't been linked." Sends the pre-linking replies directly via
+    send_text (not the OutboundMessage queue -- there's no business to
+    scope an audit row to, by definition, before linking succeeds)."""
     candidate = text.strip()
     looks_like_code = candidate and " " not in candidate and len(candidate) <= 12
     if not looks_like_code:
@@ -345,6 +385,13 @@ def _handle_unlinked_message(db: Session, from_wa_id: str, text: str, contact_na
         send_text(from_wa_id, _LINK_INVALID)
         return
 
+    # This very message is what just proved the number can receive a
+    # reply right now -- set before the welcome send below so
+    # deliver_outbound_message's session-window check (were it used here)
+    # would see it as current. Kept as a direct send_text since there's no
+    # prior Message/Conversation context to anchor an OutboundMessage's
+    # audit trail to yet.
+    identity.last_inbound_at = datetime.now(timezone.utc)
     db.commit()
     business = db.get(Business, identity.business_id)
     send_text(from_wa_id, _LINK_WELCOME.format(business_name=business.business_name))
@@ -367,6 +414,11 @@ def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, co
         if identity is None:
             _handle_unlinked_message(db, from_wa_id, text, contact_name)
             return
+
+        # v0.6 slice 2: opens/refreshes the 24h customer-service window --
+        # set before the reply below so its own send resolves as "session"
+        # rather than "template". See app/outbound.py.
+        identity.last_inbound_at = datetime.now(timezone.utc)
 
         business = db.get(Business, identity.business_id)
         conversation = get_or_create_channel_conversation(db, identity)
@@ -397,10 +449,46 @@ def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, co
         )
         db.commit()
 
-        for part in format_for_channel(result.answer, "whatsapp"):
-            send_text(from_wa_id, part)
+        _send_reply(db, business, identity, result.answer)
     finally:
         db.close()
+
+
+@celery_app.task(name="send_outbound_message")
+def send_outbound_message_task(outbound_message_id: str):
+    """v0.6 slice 2: delivers one queued proactive message
+    (app/insight_delivery.py's deliver_immediate/collect_and_queue_digests
+    both enqueue this after app/outbound.py's queue_message). Thin wrapper
+    around app/outbound.py's deliver_outbound_message, matching this
+    file's existing task-is-a-thin-wrapper convention (e.g.
+    generate_report_task -> run_report_generation)."""
+    db: Session = SessionLocal()
+    try:
+        message = db.get(OutboundMessage, outbound_message_id)
+        if message is None:
+            return
+        identity = db.get(ChannelIdentity, message.channel_identity_id)
+        if identity is None:
+            return
+        deliver_outbound_message(db, message, identity)
+        db.commit()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="dispatch_whatsapp_digests")
+def dispatch_whatsapp_digests_task():
+    """Celery beat's entry point (app/celery_app.py's beat_schedule) for
+    "daily_digest"-frequency identities -- independent of when analysis
+    itself ran (unlike "immediate", which fires from inside
+    run_business_analysis), this batches whatever's accumulated since each
+    identity's last digest. See app/insight_delivery.py."""
+    db: Session = SessionLocal()
+    try:
+        queued = collect_and_queue_digests(db)
+    finally:
+        db.close()
+    logger.info("whatsapp_digests_dispatched", queued_count=queued)
 
 
 @celery_app.task(name="cleanup_expired_refresh_tokens")

@@ -103,6 +103,15 @@ ANALYSIS_INTERVAL_SECONDS = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", str(24 * 
 REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS = int(
     os.getenv("REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS", str(24 * 60 * 60))
 )
+# v0.6 slice 2: how often the digest dispatcher CHECKS which identities are
+# due -- distinct from app/insight_delivery.py's DIGEST_INTERVAL_HOURS
+# (how long since an identity's last digest before it's due at all).
+# Hourly by default, same "check often, act on your own cadence" shape a
+# real cron-driven job would use; env-overridable for the same demo-
+# shrinking reason as every other *_INTERVAL_SECONDS here.
+WHATSAPP_DIGEST_DISPATCH_INTERVAL_SECONDS = int(
+    os.getenv("WHATSAPP_DIGEST_DISPATCH_INTERVAL_SECONDS", str(60 * 60))
+)
 celery_app.conf.beat_schedule = {
     "dispatch-scheduled-analysis": {
         "task": "dispatch_scheduled_analysis",
@@ -111,5 +120,9 @@ celery_app.conf.beat_schedule = {
     "cleanup-expired-refresh-tokens": {
         "task": "cleanup_expired_refresh_tokens",
         "schedule": REFRESH_TOKEN_CLEANUP_INTERVAL_SECONDS,
+    },
+    "dispatch-whatsapp-digests": {
+        "task": "dispatch_whatsapp_digests",
+        "schedule": WHATSAPP_DIGEST_DISPATCH_INTERVAL_SECONDS,
     },
 }

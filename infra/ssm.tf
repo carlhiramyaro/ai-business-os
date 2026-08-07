@@ -366,3 +366,37 @@ resource "aws_ssm_parameter" "whatsapp_display_number" {
     ignore_changes = [value]
   }
 }
+
+# v0.6 slice 2 (outbound infrastructure + proactive delivery, see
+# docs/decisions.md): must match a template actually approved in Meta's
+# dashboard before any out-of-session-window send can succeed -- not a
+# secret, just config that depends on manual setup outside Terraform,
+# same REPLACE_ME_MANUALLY-until-set-by-hand story as WHATSAPP_DISPLAY_
+# NUMBER above.
+resource "aws_ssm_parameter" "whatsapp_insight_template_name" {
+  name  = "${local.ssm_path}/WHATSAPP_INSIGHT_TEMPLATE_NAME"
+  type  = "String"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "whatsapp_template_language" {
+  name  = "${local.ssm_path}/WHATSAPP_TEMPLATE_LANGUAGE"
+  type  = "String"
+  value = "en_US"
+}
+
+resource "aws_ssm_parameter" "whatsapp_digest_interval_hours" {
+  name  = "${local.ssm_path}/WHATSAPP_DIGEST_INTERVAL_HOURS"
+  type  = "String"
+  value = "24"
+}
+
+resource "aws_ssm_parameter" "whatsapp_digest_dispatch_interval_seconds" {
+  name  = "${local.ssm_path}/WHATSAPP_DIGEST_DISPATCH_INTERVAL_SECONDS"
+  type  = "String"
+  value = "3600"
+}

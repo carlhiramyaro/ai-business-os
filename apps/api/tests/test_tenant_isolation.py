@@ -88,7 +88,7 @@ def test_route_inventory_is_non_empty():
     coming back empty (e.g. a future FastAPI upgrade changing the
     _IncludedRouter shape again) -- without this, every test below would
     vacuously "pass" by having nothing to check."""
-    assert len(_BUSINESS_SCOPED_ROUTES) >= 33
+    assert len(_BUSINESS_SCOPED_ROUTES) >= 34
     assert len(_UNSCOPED_ROUTES) >= 11
 
 

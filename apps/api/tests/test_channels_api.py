@@ -160,3 +160,76 @@ def test_channels_scoped_to_owning_business(client, db_session):
         f"/api/v1/businesses/{business_a['id']}/channels/whatsapp/link-code", headers=auth_header(token_b)
     )
     assert link_response.status_code == 403
+
+
+# --- v0.6 slice 2: notification_frequency ------------------------------------
+
+
+def test_list_channels_defaults_to_off(client, db_session):
+    token = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    business = _create_business(client, token)
+    code_response = client.post(
+        f"/api/v1/businesses/{business['id']}/channels/whatsapp/link-code", headers=auth_header(token)
+    ).json()
+    redeem_link_code(db_session, code_response["code"], "whatsapp", "233247000000")
+    db_session.commit()
+
+    [entry] = client.get(f"/api/v1/businesses/{business['id']}/channels/", headers=auth_header(token)).json()
+    assert entry["notificationFrequency"] == "off"
+
+
+def test_update_channel_frequency(client, db_session):
+    token = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    business = _create_business(client, token)
+    code_response = client.post(
+        f"/api/v1/businesses/{business['id']}/channels/whatsapp/link-code", headers=auth_header(token)
+    ).json()
+    identity = redeem_link_code(db_session, code_response["code"], "whatsapp", "233247000001")
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/businesses/{business['id']}/channels/{identity.id}",
+        json={"notificationFrequency": "daily_digest"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["notificationFrequency"] == "daily_digest"
+
+    [entry] = client.get(f"/api/v1/businesses/{business['id']}/channels/", headers=auth_header(token)).json()
+    assert entry["notificationFrequency"] == "daily_digest"
+
+
+def test_update_channel_frequency_rejects_invalid_value(client, db_session):
+    token = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    business = _create_business(client, token)
+    code_response = client.post(
+        f"/api/v1/businesses/{business['id']}/channels/whatsapp/link-code", headers=auth_header(token)
+    ).json()
+    identity = redeem_link_code(db_session, code_response["code"], "whatsapp", "233247000002")
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/businesses/{business['id']}/channels/{identity.id}",
+        json={"notificationFrequency": "every_five_minutes"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 422
+
+
+def test_update_channel_frequency_not_found_for_other_business(client, db_session):
+    token_a = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    token_b = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    business_a = _create_business(client, token_a, "Business A")
+    business_b = _create_business(client, token_b, "Business B")
+    code_response = client.post(
+        f"/api/v1/businesses/{business_a['id']}/channels/whatsapp/link-code", headers=auth_header(token_a)
+    ).json()
+    identity = redeem_link_code(db_session, code_response["code"], "whatsapp", "233247000003")
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/businesses/{business_b['id']}/channels/{identity.id}",
+        json={"notificationFrequency": "immediate"},
+        headers=auth_header(token_b),
+    )
+    assert response.status_code == 404

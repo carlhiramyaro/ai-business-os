@@ -15,10 +15,11 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+import app.outbound as outbound
 import app.tasks as tasks
 from app.chat_generation import ChatAnswer
 from app.database import get_db
-from app.models import Business, ChannelIdentity, Conversation, Message, User, WebhookEvent
+from app.models import Business, ChannelIdentity, Conversation, Message, OutboundMessage, User, WebhookEvent
 from app.security import create_access_token, hash_password
 from main import app
 from tests.conftest import TestSessionLocal
@@ -37,10 +38,12 @@ def fake_generate_chat_answer(db, business, question, history):
 
 
 SENT_MESSAGES: list[tuple[str, str]] = []
+_next_provider_id = iter(f"wamid.FAKE{i}" for i in range(100000))
 
 
 def fake_send_text(to, body):
     SENT_MESSAGES.append((to, body))
+    return next(_next_provider_id)
 
 
 @pytest.fixture(autouse=True)
@@ -49,10 +52,19 @@ def _patch_env_and_tasks(monkeypatch):
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
     monkeypatch.setattr(tasks, "SessionLocal", TestSessionLocal)
     monkeypatch.setattr(tasks, "generate_chat_answer", fake_generate_chat_answer)
+    # send_text is called from two places since v0.6 slice 2: directly by
+    # app/tasks.py's _handle_unlinked_message (pre-linking replies, no
+    # OutboundMessage row) and, via app/outbound.py's
+    # deliver_outbound_message, for everything that DOES go through the
+    # queue (chat replies post-linking, proactive insight pushes) -- both
+    # need patching, since they're two different modules' bound names for
+    # the same underlying function.
     monkeypatch.setattr(tasks, "send_text", fake_send_text)
+    monkeypatch.setattr(outbound, "send_text", fake_send_text)
     SENT_MESSAGES.clear()
     yield
     with TestSessionLocal() as db:
+        db.query(OutboundMessage).delete()
         db.query(Message).delete()
         db.query(Conversation).delete()
         db.query(ChannelIdentity).delete()
@@ -109,6 +121,13 @@ def _text_message_payload(message_id: str, from_wa_id: str, text: str) -> dict:
             }
         ]
     }
+
+
+def _status_payload(message_id: str, status_value: str, errors: list[dict] | None = None) -> dict:
+    status = {"id": message_id, "status": status_value, "recipient_id": "233241234567"}
+    if errors:
+        status["errors"] = errors
+    return {"entry": [{"changes": [{"value": {"statuses": [status]}}]}]}
 
 
 def test_get_webhook_handshake_succeeds_with_correct_token(real_client):
@@ -199,3 +218,103 @@ def test_duplicate_message_id_is_not_reprocessed(real_client, linked_identity):
         assert db.query(Message).filter(Message.role == "user").count() == 1
 
     assert len(SENT_MESSAGES) == 1
+
+
+def test_chat_reply_creates_a_sent_outbound_message(real_client, linked_identity):
+    """v0.6 slice 2: chat replies now go through the same OutboundMessage
+    queue proactive sends use, not a bare send_text call -- see
+    docs/decisions.md."""
+    _, external_id = linked_identity
+    payload = _text_message_payload("wamid.audit", external_id, "how did I do today?")
+    body = json.dumps(payload).encode()
+
+    response = real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+    assert response.status_code == 200
+
+    with TestSessionLocal() as db:
+        [message] = db.query(OutboundMessage).all()
+        assert message.kind == "chat_reply"
+        assert message.status == "sent"
+        assert message.send_method == "session"
+        assert message.provider_message_id is not None
+
+
+# --- v0.6 slice 2: delivery-status callbacks --------------------------------
+
+
+def _queue_and_send_message(business_id: str, identity_external_id: str, provider_message_id: str) -> str:
+    """Simulates a message this app already sent (bypassing the real send
+    path -- these tests are about the STATUS CALLBACK, not delivery
+    itself, already covered by tests/test_outbound.py)."""
+    with TestSessionLocal() as db:
+        identity = db.query(ChannelIdentity).filter(ChannelIdentity.external_id == identity_external_id).one()
+        message = OutboundMessage(
+            business_id=uuid.UUID(business_id),
+            channel_identity_id=identity.id,
+            channel="whatsapp",
+            kind="chat_reply",
+            body="hello",
+            send_method="session",
+            provider_message_id=provider_message_id,
+            status="sent",
+        )
+        db.add(message)
+        db.commit()
+        return str(message.id)
+
+
+def test_status_callback_updates_outbound_message(real_client, linked_identity):
+    business_id, external_id = linked_identity
+    message_id = _queue_and_send_message(business_id, external_id, "wamid.STATUSTEST1")
+
+    payload = _status_payload("wamid.STATUSTEST1", "delivered")
+    body = json.dumps(payload).encode()
+    response = real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+    assert response.status_code == 200
+
+    with TestSessionLocal() as db:
+        message = db.get(OutboundMessage, uuid.UUID(message_id))
+        assert message.status == "delivered"
+        assert message.delivered_at is not None
+
+
+def test_status_callback_for_unknown_message_is_ignored(real_client):
+    payload = _status_payload("wamid.NEVERSENTBYTHISAPP", "delivered")
+    body = json.dumps(payload).encode()
+    response = real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+    assert response.status_code == 200  # no error, just nothing to update
+
+
+def test_status_callback_respects_monotonic_ordering(real_client, linked_identity):
+    business_id, external_id = linked_identity
+    message_id = _queue_and_send_message(business_id, external_id, "wamid.STATUSTEST2")
+
+    read_payload = json.dumps(_status_payload("wamid.STATUSTEST2", "read")).encode()
+    real_client.post("/api/v1/webhooks/whatsapp", content=read_payload, headers={"X-Hub-Signature-256": _sign(read_payload)})
+
+    # An out-of-order "delivered" arriving after "read" must not regress it.
+    delivered_payload = json.dumps(_status_payload("wamid.STATUSTEST2", "delivered")).encode()
+    real_client.post(
+        "/api/v1/webhooks/whatsapp", content=delivered_payload, headers={"X-Hub-Signature-256": _sign(delivered_payload)}
+    )
+
+    with TestSessionLocal() as db:
+        message = db.get(OutboundMessage, uuid.UUID(message_id))
+        assert message.status == "read"
+
+
+def test_status_callback_records_failure_reason(real_client, linked_identity):
+    business_id, external_id = linked_identity
+    message_id = _queue_and_send_message(business_id, external_id, "wamid.STATUSTEST3")
+
+    payload = _status_payload(
+        "wamid.STATUSTEST3", "failed", errors=[{"code": 131026, "title": "Message undeliverable"}]
+    )
+    body = json.dumps(payload).encode()
+    real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    with TestSessionLocal() as db:
+        message = db.get(OutboundMessage, uuid.UUID(message_id))
+        assert message.status == "failed"
+        assert message.error == "Message undeliverable"
+        assert message.failed_at is not None

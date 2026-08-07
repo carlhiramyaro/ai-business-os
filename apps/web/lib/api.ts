@@ -518,18 +518,39 @@ export function createWhatsAppLinkCode(accessToken: string, businessId: string) 
   }).then((response) => parseJsonOrThrow<LinkCodeResponse>(response));
 }
 
+// v0.6 slice 2 (outbound infrastructure + proactive delivery): "off"
+// (default, opt-in) never pushes; "immediate" sends a bundled message
+// right after each analysis run that finds something new; "daily_digest"
+// batches on its own schedule regardless of when analysis ran. See
+// app/insight_delivery.py, docs/decisions.md.
+export type NotificationFrequency = "off" | "immediate" | "daily_digest";
+
 export interface ChannelIdentitySummary {
   id: string;
   channel: string;
   displayName: string | null;
   maskedExternalId: string;
   verifiedAt: string;
+  notificationFrequency: NotificationFrequency;
 }
 
 export function listChannels(accessToken: string, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/`, {
     headers: authHeaders(accessToken),
   }).then((response) => parseJsonOrThrow<ChannelIdentitySummary[]>(response));
+}
+
+export function updateChannelFrequency(
+  accessToken: string,
+  businessId: string,
+  channelIdentityId: string,
+  notificationFrequency: NotificationFrequency
+) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/${channelIdentityId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    body: JSON.stringify({ notificationFrequency }),
+  }).then((response) => parseJsonOrThrow<ChannelIdentitySummary>(response));
 }
 
 export function unlinkChannel(accessToken: string, businessId: string, channelIdentityId: string) {

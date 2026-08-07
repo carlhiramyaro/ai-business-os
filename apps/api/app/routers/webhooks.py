@@ -6,7 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import WebhookEvent
+from app.models import OutboundMessage, WebhookEvent
+from app.outbound import apply_status_update
 from app.rate_limit import RateLimit
 from app.whatsapp import parse_inbound, verify_signature
 
@@ -94,5 +95,22 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
             # surfaced to Meta as a webhook failure, same reasoning as the
             # require_worker_online skip above.
             logger.error("whatsapp_webhook_enqueue_failed", message_id=message.message_id, exc_info=True)
+
+    # v0.6 slice 2: delivery-status callbacks for messages THIS app sent.
+    # Applied directly, not enqueued -- a status update is a fast, pure DB
+    # write with no LLM call and nothing to retry independently, unlike
+    # handling an inbound message above.
+    for status_update in parsed.statuses:
+        outbound_message = (
+            db.query(OutboundMessage)
+            .filter(OutboundMessage.provider_message_id == status_update.message_id)
+            .one_or_none()
+        )
+        if outbound_message is None:
+            # Expected for anything sent before this deploy, or a status
+            # callback for a message this app never sent -- not an error.
+            continue
+        if apply_status_update(outbound_message, status_update.status, status_update.error):
+            db.commit()
 
     return Response(status_code=status.HTTP_200_OK)

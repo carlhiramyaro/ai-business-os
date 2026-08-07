@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.agents import narrate_insight
 from app.chat_tools import get_inactive_customers
 from app.forecasting import forecast_stock_depletion, sales_velocity_by_product
+from app.insight_delivery import deliver_immediate
 from app.models import Business, Expense, Insight, Inventory, Sale
 from app.retrieval import retrieve_relevant_chunks
 from app.signals import (
@@ -137,7 +138,7 @@ def _run_business_analysis_body(db: Session, business: Business, today: date | N
         )
     }
 
-    created = 0
+    created_insights: list[Insight] = []
     for signal, fingerprint in zip(signals, fingerprints):
         if fingerprint in existing:
             continue
@@ -149,20 +150,27 @@ def _run_business_analysis_body(db: Session, business: Business, today: date | N
             source_types=["business_fact"],
         )
         narration = narrate_insight(signal, relevant_facts=relevant_facts)
-        db.add(
-            Insight(
-                business_id=business.id,
-                insight_type=signal["type"],
-                severity=signal["severity"],
-                title=narration["title"],
-                body=narration["body"],
-                metrics=signal["metrics"],
-                fingerprint=fingerprint,
-                period_start=today - timedelta(days=6),
-                period_end=today,
-            )
+        insight = Insight(
+            business_id=business.id,
+            insight_type=signal["type"],
+            severity=signal["severity"],
+            title=narration["title"],
+            body=narration["body"],
+            metrics=signal["metrics"],
+            fingerprint=fingerprint,
+            period_start=today - timedelta(days=6),
+            period_end=today,
         )
-        created += 1
+        db.add(insight)
+        created_insights.append(insight)
 
     db.commit()
-    return created
+
+    # v0.6 slice 2: push a bundled WhatsApp message to every "immediate"
+    # identity linked to this business -- one message for this whole run,
+    # not one per insight, so several signals detected at once don't
+    # flood the owner's phone. No-op if nothing new was created or no
+    # identity is set to "immediate". See docs/decisions.md.
+    deliver_immediate(db, business, created_insights)
+
+    return len(created_insights)

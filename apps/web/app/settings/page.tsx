@@ -6,13 +6,22 @@ import { useAuth } from "@/lib/auth-context";
 import {
   ChannelIdentitySummary,
   LinkCodeResponse,
+  NotificationFrequency,
   createWhatsAppLinkCode,
   listChannels,
   unlinkChannel,
+  updateChannelFrequency,
 } from "@/lib/api";
 import { BusinessPicker } from "@/components/BusinessPicker";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Select } from "@/components/ui/Select";
+
+const FREQUENCY_LABELS: Record<NotificationFrequency, string> = {
+  off: "Off -- ask-only, no proactive messages",
+  immediate: "Immediate -- as soon as a new insight is found",
+  daily_digest: "Daily digest -- one bundled message per day",
+};
 
 function remainingSeconds(expiresAt: string | null): number | null {
   return expiresAt ? Math.max(0, Math.round((new Date(expiresAt).getTime() - Date.now()) / 1000)) : null;
@@ -90,6 +99,23 @@ export default function SettingsPage() {
       setChannels((prev) => prev?.filter((c) => c.id !== channelIdentityId) ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not unlink number");
+    }
+  }
+
+  async function handleFrequencyChange(channelIdentityId: string, frequency: NotificationFrequency) {
+    if (!accessToken || !businessId) return;
+    setError(null);
+    // Update immediately, roll back on failure -- picking a value from a
+    // <select> should feel instant, not wait on a round trip.
+    const previous = channels;
+    setChannels(
+      (prev) => prev?.map((c) => (c.id === channelIdentityId ? { ...c, notificationFrequency: frequency } : c)) ?? null
+    );
+    try {
+      await updateChannelFrequency(accessToken, businessId, channelIdentityId, frequency);
+    } catch (err) {
+      setChannels(previous ?? null);
+      setError(err instanceof Error ? err.message : "Could not update notification setting");
     }
   }
 
@@ -175,21 +201,35 @@ export default function SettingsPage() {
           ) : (
             <div className="flex flex-col gap-3">
               {channels.map((identity) => (
-                <div
-                  key={identity.id}
-                  className="flex flex-col items-start gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="flex flex-col gap-1">
-                    <p className="text-sm font-medium text-foreground">
-                      {identity.displayName ?? "WhatsApp"} · {identity.maskedExternalId}
-                    </p>
-                    <span className="text-xs text-muted">
-                      Linked {new Date(identity.verifiedAt).toLocaleString()}
-                    </span>
+                <div key={identity.id} className="flex flex-col gap-3 rounded-md border border-border p-3">
+                  <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-1">
+                      <p className="text-sm font-medium text-foreground">
+                        {identity.displayName ?? "WhatsApp"} · {identity.maskedExternalId}
+                      </p>
+                      <span className="text-xs text-muted">
+                        Linked {new Date(identity.verifiedAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <Button variant="danger" onClick={() => handleUnlink(identity.id)} className="sm:shrink-0">
+                      Unlink
+                    </Button>
                   </div>
-                  <Button variant="danger" onClick={() => handleUnlink(identity.id)} className="sm:shrink-0">
-                    Unlink
-                  </Button>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted">Proactive insights</label>
+                    <Select
+                      value={identity.notificationFrequency}
+                      onChange={(event) =>
+                        handleFrequencyChange(identity.id, event.target.value as NotificationFrequency)
+                      }
+                    >
+                      {(Object.keys(FREQUENCY_LABELS) as NotificationFrequency[]).map((value) => (
+                        <option key={value} value={value}>
+                          {FREQUENCY_LABELS[value]}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
                 </div>
               ))}
             </div>
