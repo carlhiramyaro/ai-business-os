@@ -281,3 +281,88 @@ resource "aws_ssm_parameter" "rate_limit_documents" {
   type  = "String"
   value = "60/hour"
 }
+
+resource "aws_ssm_parameter" "rate_limit_webhook" {
+  name  = "${local.ssm_path}/RATE_LIMIT_WEBHOOK"
+  type  = "String"
+  value = "120/minute"
+}
+
+# v0.6 slice 1 (WhatsApp channel, docs/decisions.md): Meta Cloud API
+# credentials. Same REPLACE_ME_MANUALLY placeholder pattern as
+# OPENAI_API_KEY/SENTRY_DSN/LANGFUSE_* above -- set the real values once a
+# Meta app + WhatsApp product + system-user token exist:
+#   aws ssm put-parameter --name /ai-business-os/prod/WHATSAPP_ACCESS_TOKEN \
+#     --type SecureString --value EAA... --overwrite
+#   aws ssm put-parameter --name /ai-business-os/prod/WHATSAPP_APP_SECRET \
+#     --type SecureString --value ... --overwrite
+# app/whatsapp.py's is_configured() treats an unset/placeholder value as
+# "this channel is off" -- a production deploy with these still at
+# REPLACE_ME_MANUALLY runs fine, it just can't send/verify WhatsApp
+# messages yet, same story as an unconfigured SENTRY_DSN.
+resource "aws_ssm_parameter" "whatsapp_phone_number_id" {
+  name  = "${local.ssm_path}/WHATSAPP_PHONE_NUMBER_ID"
+  type  = "String"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "whatsapp_access_token" {
+  name  = "${local.ssm_path}/WHATSAPP_ACCESS_TOKEN"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "whatsapp_app_secret" {
+  name  = "${local.ssm_path}/WHATSAPP_APP_SECRET"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Not a secret -- this is the shared-secret CHECK value the app compares
+# an inbound GET's hub.verify_token against during Meta's webhook
+# subscription handshake (app/routers/webhooks.py), not a credential used
+# to authenticate outbound calls. Still SecureString for consistency with
+# everything else in this "invented once, pasted into Meta's dashboard"
+# category, and because ignore_changes means the cost difference is moot.
+resource "aws_ssm_parameter" "whatsapp_verify_token" {
+  name  = "${local.ssm_path}/WHATSAPP_VERIFY_TOKEN"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "whatsapp_api_version" {
+  name  = "${local.ssm_path}/WHATSAPP_API_VERSION"
+  type  = "String"
+  value = "v21.0"
+}
+
+# The human-readable number owners are told to text (Settings page) --
+# cosmetic display text, not used for any API call (WHATSAPP_PHONE_NUMBER_ID
+# is what actually addresses the Cloud API). Left blank until a real test/
+# production number exists; app/routers/channels.py omits it from the
+# response when unset.
+resource "aws_ssm_parameter" "whatsapp_display_number" {
+  name  = "${local.ssm_path}/WHATSAPP_DISPLAY_NUMBER"
+  type  = "String"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}

@@ -500,3 +500,41 @@ export function deleteBusinessFact(accessToken: string, businessId: string, fact
     headers: authHeaders(accessToken),
   });
 }
+
+// WhatsApp channel linking (v0.6 slice 1) -- generate a short-lived code in
+// the web app, text it from WhatsApp to link that number. See
+// app/routers/channels.py, docs/decisions.md.
+
+export interface LinkCodeResponse {
+  code: string;
+  expiresAt: string;
+  whatsappNumber: string | null;
+}
+
+export function createWhatsAppLinkCode(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/whatsapp/link-code`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<LinkCodeResponse>(response));
+}
+
+export interface ChannelIdentitySummary {
+  id: string;
+  channel: string;
+  displayName: string | null;
+  maskedExternalId: string;
+  verifiedAt: string;
+}
+
+export function listChannels(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<ChannelIdentitySummary[]>(response));
+}
+
+export function unlinkChannel(accessToken: string, businessId: string, channelIdentityId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/${channelIdentityId}`, {
+    method: "DELETE",
+    headers: authHeaders(accessToken),
+  });
+}

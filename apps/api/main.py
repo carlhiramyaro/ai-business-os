@@ -14,7 +14,20 @@ from app.database import get_db
 from app.logging_config import configure_logging
 from app.observability import flush_observability, init_observability
 from app.rate_limit import DEFAULT_LIMIT_SPEC, RateLimit
-from app.routers import auth, business, chat, documents, entities, entries, insights, memory, report, upload
+from app.routers import (
+    auth,
+    business,
+    channels,
+    chat,
+    documents,
+    entities,
+    entries,
+    insights,
+    memory,
+    report,
+    upload,
+    webhooks,
+)
 from app.worker_health import workers_online
 
 load_dotenv()
@@ -150,6 +163,8 @@ app.include_router(entries.router)
 app.include_router(documents.router)
 app.include_router(insights.router)
 app.include_router(memory.router)
+app.include_router(channels.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/")

@@ -1,5 +1,6 @@
 from app.models.agent import AgentOutput, AgentRun
 from app.models.business import Business
+from app.models.channel import ChannelIdentity, ChannelLinkCode, WebhookEvent
 from app.models.chat import Conversation, Embedding, Message
 from app.models.entities import Customer, Supplier
 from app.models.insight import Insight
@@ -31,4 +32,7 @@ __all__ = [
     "AgentOutput",
     "Insight",
     "BusinessFact",
+    "ChannelIdentity",
+    "ChannelLinkCode",
+    "WebhookEvent",
 ]

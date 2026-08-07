@@ -33,6 +33,13 @@ _UNSCOPED_ALLOWLIST = {
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/businesses/"),
     ("GET", "/api/v1/businesses/"),
+    # v0.6 slice 1 (WhatsApp channel): a webhook has no JWT to check
+    # ownership against -- Meta calls these directly. Tenant scoping for
+    # everything these routes do comes from a verified ChannelIdentity
+    # looked up inside handle_whatsapp_message_task (app/tasks.py), never
+    # from anything in the request itself. See docs/decisions.md.
+    ("GET", "/api/v1/webhooks/whatsapp"),
+    ("POST", "/api/v1/webhooks/whatsapp"),
 }
 
 
@@ -81,8 +88,8 @@ def test_route_inventory_is_non_empty():
     coming back empty (e.g. a future FastAPI upgrade changing the
     _IncludedRouter shape again) -- without this, every test below would
     vacuously "pass" by having nothing to check."""
-    assert len(_BUSINESS_SCOPED_ROUTES) >= 30
-    assert len(_UNSCOPED_ROUTES) >= 9
+    assert len(_BUSINESS_SCOPED_ROUTES) >= 33
+    assert len(_UNSCOPED_ROUTES) >= 11
 
 
 def _route_id(route):

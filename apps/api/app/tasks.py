@@ -10,14 +10,23 @@ from sqlalchemy.orm import Session
 
 from app.auth_maintenance import delete_expired_refresh_tokens
 from app.celery_app import celery_app
+from app.channels import (
+    MAX_HISTORY_MESSAGES,
+    format_for_channel,
+    get_or_create_channel_conversation,
+    redeem_link_code,
+    resolve_identity,
+)
+from app.chat_generation import generate_chat_answer
 from app.column_mapping import resolve_column_mapping
 from app.database import SessionLocal
 from app.document_extraction import extract_document
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.insights_generation import run_business_analysis
-from app.models import Business, ColumnMapping, DatasetProfile, DocumentExtraction, Report, UploadSession
+from app.models import Business, ColumnMapping, DatasetProfile, DocumentExtraction, Message, Report, UploadSession
 from app.report_generation import generate_report, run_report_generation
 from app.storage import document_key_for, download_fileobj, key_for
+from app.whatsapp import send_text
 
 load_dotenv()
 
@@ -310,6 +319,88 @@ def dispatch_scheduled_analysis_task():
 
     for business_id in business_ids:
         run_business_analysis_task.delay(str(business_id))
+
+
+_LINK_WELCOME = "Linked to {business_name}. Ask me anything about your business, e.g. \"how did I do this week?\""
+_LINK_INSTRUCTIONS = (
+    "This number isn't linked to a business yet. Log in at the web app, go to Settings, "
+    "and generate a link code -- then text that code here to connect."
+)
+_LINK_INVALID = "That code isn't valid or has expired. Generate a new one from Settings and try again."
+
+
+def _handle_unlinked_message(db: Session, from_wa_id: str, text: str, contact_name: str | None) -> None:
+    """No ChannelIdentity exists yet for this number -- the only thing a
+    message from it can mean is "this is a link code" or "this number
+    hasn't been linked." Never touches business data (there's no business
+    to touch: this is the pre-linking state by definition)."""
+    candidate = text.strip()
+    looks_like_code = candidate and " " not in candidate and len(candidate) <= 12
+    if not looks_like_code:
+        send_text(from_wa_id, _LINK_INSTRUCTIONS)
+        return
+
+    identity = redeem_link_code(db, candidate, "whatsapp", from_wa_id, display_name=contact_name)
+    if identity is None:
+        send_text(from_wa_id, _LINK_INVALID)
+        return
+
+    db.commit()
+    business = db.get(Business, identity.business_id)
+    send_text(from_wa_id, _LINK_WELCOME.format(business_name=business.business_name))
+
+
+@celery_app.task(name="handle_whatsapp_message")
+def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, contact_name: str | None = None):
+    """v0.6 slice 1: routes one inbound WhatsApp text through to the SAME
+    chat agent loop the web UI uses (app/chat_generation.py, entirely
+    unchanged) and sends the answer back. app/routers/webhooks.py enqueues
+    this after verifying the signature and recording the message for
+    idempotency -- this task trusts message_id/from_wa_id/text as already
+    validated.
+
+    Tenant scoping comes ONLY from the resolved ChannelIdentity, never from
+    anything in the inbound payload -- see app/models/channel.py."""
+    db: Session = SessionLocal()
+    try:
+        identity = resolve_identity(db, "whatsapp", from_wa_id)
+        if identity is None:
+            _handle_unlinked_message(db, from_wa_id, text, contact_name)
+            return
+
+        business = db.get(Business, identity.business_id)
+        conversation = get_or_create_channel_conversation(db, identity)
+
+        db.add(Message(conversation_id=conversation.id, role="user", content=text))
+        db.flush()
+
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in db.query(Message)
+            .filter(Message.conversation_id == conversation.id)
+            .order_by(Message.created_at)
+            .all()[:-1]  # exclude the message just added -- passed separately below
+        ][-MAX_HISTORY_MESSAGES:]
+
+        with propagate_attributes(
+            session_id=str(conversation.id), metadata={"business_id": str(business.id), "channel": "whatsapp"}
+        ):
+            result = generate_chat_answer(db, business, text, history)
+
+        db.add(
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=result.answer,
+                tool_calls=result.tool_calls,
+            )
+        )
+        db.commit()
+
+        for part in format_for_channel(result.answer, "whatsapp"):
+            send_text(from_wa_id, part)
+    finally:
+        db.close()
 
 
 @celery_app.task(name="cleanup_expired_refresh_tokens")

@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/insights", label: "Insights" },
   { href: "/memory", label: "Memory" },
   { href: "/chat", label: "Chat" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export function NavBar() {

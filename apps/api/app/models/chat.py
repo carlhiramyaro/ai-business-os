@@ -16,6 +16,14 @@ class Conversation(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     business_id = Column(UUID(as_uuid=True), ForeignKey("businesses.id"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # v0.6 slice 1 (WhatsApp channel): both nullable so every pre-existing
+    # conversation is unaffected -- NULL/"web" means the web chat UI (the
+    # only channel that existed before this). A channel_identity_id is set
+    # only for channel="whatsapp" conversations; app/channels.py's
+    # get_or_create_channel_conversation keeps one rolling conversation per
+    # identity rather than one per web-style "session".
+    channel = Column(String, nullable=True)
+    channel_identity_id = Column(UUID(as_uuid=True), ForeignKey("channel_identities.id"), nullable=True, index=True)
 
 
 class Message(Base):

@@ -17,7 +17,14 @@ services:
     # few vars (JWT_SECRET_KEY, etc.) the postgres image just ignores.
     env_file: apps/api/.env
     ports:
-      - "5432:5432" # exposed so a local psql/GUI client can still connect directly
+      # Host side is overridable (POSTGRES_HOST_PORT, default 5432) for a
+      # machine that already has something bound to 5432 -- the api/worker/
+      # beat containers never go through this mapping (they reach Postgres
+      # over the internal Compose network at postgres:5432 regardless), so
+      # changing it has zero effect on how the app itself connects. Set via
+      # a root-level .env (gitignored), not apps/api/.env -- Compose's
+      # ${VAR} substitution here reads from a .env next to this file.
+      - "${POSTGRES_HOST_PORT:-5432}:5432" # exposed so a local psql/GUI client can still connect directly
     # /var/lib/postgresql (not .../data) -- the postgres 18+ image expects
     # a single mount at the parent dir and manages the major-version-
     # specific subdirectory itself (pg_ctlcluster-compatible layout); a
