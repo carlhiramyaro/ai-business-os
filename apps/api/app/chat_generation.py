@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 # (session_id=conversation_id) is applied at the call site in
 # app/routers/chat.py, not here -- this function doesn't receive
 # conversation_id itself.
+import structlog
 from langfuse import observe
 from langfuse.openai import OpenAI
 from sqlalchemy.orm import Session
@@ -33,6 +35,8 @@ from app.document_extraction import (
 from app.retrieval import retrieve_relevant_chunks
 
 load_dotenv()
+
+logger = structlog.get_logger(__name__)
 
 # Caps the agent loop: each round is one model call that may request tool
 # calls. Analytical questions rarely need more than 2-3 rounds; past the cap
@@ -275,6 +279,71 @@ def _system_prompt(business) -> str:
     )
 
 
+# Tools that actually change what is staged or recorded. If none of these
+# ran, nothing was written this turn, no matter what the reply says.
+_WRITE_TOOL_PREFIXES = ("propose_", "confirm_", "cancel_")
+
+# Matches a FIRST-PERSON or passive claim of having saved something --
+# "I've staged...", "I'm proposing...", "has been successfully recorded".
+# Deliberately not a bare keyword match: legitimate analytical answers say
+# things like "There were no recorded sales today", and replacing a correct
+# answer with an apology would be its own bug.
+_STAGE_VERBS = r"stag(?:e|ed|ing)|propos(?:e|ed|ing)|record(?:|ed|ing)|logg(?:ed|ing)|sav(?:e|ed|ing)"
+_STAGING_CLAIM_RE = re.compile(
+    # Past/completed: "I've staged...", "has been successfully recorded".
+    rf"\b(?:I['’]ve|I have|I)\s+(?:just\s+)?(?:{_STAGE_VERBS})\b"
+    rf"|\bhas been\s+(?:successfully\s+)?(?:{_STAGE_VERBS})\b"
+    # In progress: "I'm proposing...".
+    rf"|\bI['’]?m\s+(?:{_STAGE_VERBS})\b"
+    # Intent, which reads identically to the owner and is just as dangerous:
+    # "I'll propose the following entry... Please confirm." invites a "yes"
+    # that would confirm whatever was ALREADY pending. Caught leaking 3/20
+    # before this alternation was added.
+    rf"|\b(?:I['’]ll|I will|let me|I['’]?m going to)\s+(?:{_STAGE_VERBS})\b",
+    re.IGNORECASE,
+)
+
+_UNVERIFIED_CLAIM_REPLY = (
+    "Sorry -- I didn't actually save that, so nothing has been recorded. Please send it "
+    "again with the details (what it was, how many, and the price) and I'll record it properly."
+)
+
+
+def _guard_answer(answer: str | None, executed: list[dict]) -> str | None:
+    """Last line of defence: never tell the owner something was saved when
+    no write tool ran this turn.
+
+    The model intermittently narrates a staged entry without calling
+    propose_*_entry -- it imitates the same claim from earlier in the
+    conversation. Measured at 20/20 correct when nothing is pending, but
+    only 14/20 when an entry already is; neither a stronger prompt nor a
+    larger model (gpt-4o scored WORSE than gpt-4o-mini on the same case)
+    moved it, because the cause is imitation of conversational precedent
+    rather than capability. See docs/decisions.md [2026-08-27].
+
+    So this does not try to make the model behave. It makes the failure
+    honest and recoverable: an owner asked to resend has lost nothing, an
+    owner falsely told "recorded" has lost a sale from their books and has
+    no way to know. Deterministic, no extra model call.
+
+    A false positive costs one unnecessary "please resend"; a false
+    negative silently corrupts the owner's records. The asymmetry is why
+    this errs toward challenging the claim.
+    """
+    if not answer:
+        return answer
+    if any(t.get("tool", "").startswith(_WRITE_TOOL_PREFIXES) for t in executed):
+        return answer
+    if _STAGING_CLAIM_RE.search(answer):
+        logger.warning(
+            "chat_unverified_staging_claim",
+            answer_preview=answer[:200],
+            tools_called=[t.get("tool") for t in executed],
+        )
+        return _UNVERIFIED_CLAIM_REPLY
+    return answer
+
+
 def _current_state(db: Session, business_id: uuid.UUID) -> str:
     """Deterministic snapshot of the two pieces of conversation state the
     model would otherwise infer from its own replayed prose. Read from the
@@ -359,7 +428,7 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
         response = client.chat.completions.create(model=model, messages=messages, tools=tools)
         message = response.choices[0].message
         if not message.tool_calls:
-            return ChatAnswer(answer=message.content, tool_calls=executed)
+            return ChatAnswer(answer=_guard_answer(message.content, executed), tool_calls=executed)
 
         messages.append(message)
         for tool_call in message.tool_calls:
@@ -384,4 +453,4 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
     # Round cap hit: one last call with no tools available forces a final
     # answer from the context gathered so far.
     response = client.chat.completions.create(model=model, messages=messages)
-    return ChatAnswer(answer=response.choices[0].message.content, tool_calls=executed)
+    return ChatAnswer(answer=_guard_answer(response.choices[0].message.content, executed), tool_calls=executed)

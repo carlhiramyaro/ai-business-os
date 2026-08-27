@@ -190,6 +190,30 @@ def _active_pending_entry(db: Session, business_id: uuid.UUID) -> PendingEntry |
     )
 
 
+def pending_entry_footer(db: Session, business_id: uuid.UUID) -> str | None:
+    """Owner-facing, database-derived statement of what a "yes" would
+    actually record right now. None when nothing is staged.
+
+    This is the guarantee the model cannot undermine. It intermittently
+    narrates a staged entry without calling propose_*_entry, and prose
+    guards proved leaky -- each phrasing blocked ("I've staged", "I'll
+    propose") produced another ("I've replaced the previous entry"), which
+    is unwinnable by pattern-matching. So the owner is shown the real state
+    alongside whatever the model said: if the reply describes a coke sale
+    but this line still names sugar, the discrepancy is visible BEFORE they
+    reply "yes" and confirm the wrong record.
+
+    Deliberately appended at SEND time only (app/tasks.py's _send_reply),
+    never stored on the Message row: conversation history is replayed to
+    the model, and a stored footer would become one more pattern for it to
+    imitate rather than act on. See docs/decisions.md [2026-08-27].
+    """
+    entry = _active_pending_entry(db, business_id)
+    if entry is None:
+        return None
+    return f"⏳ Awaiting your confirmation: {entry.summary}\nReply YES to record this, or NO to discard it."
+
+
 def describe_pending_entry_state(db: Session, business_id: uuid.UUID) -> str:
     """One line of ground truth about whether anything is staged right now,
     for injection into the model's context (app/chat_generation.py).
@@ -219,7 +243,19 @@ def describe_pending_entry_state(db: Session, business_id: uuid.UUID) -> str:
     return (
         f"There IS a staged entry awaiting confirmation: {entry.summary} "
         f"(type: {entry.dataset_type}). If the owner confirms, call confirm_pending_entry; "
-        "if they reject or correct it, call cancel_pending_entry."
+        "if they reject or correct it, call cancel_pending_entry. "
+        # An earlier version of this branch also told the model that staging
+        # a new entry "replaces the one above, say so when you relay it".
+        # Reverted: measurement showed it TAUGHT the failure. The model
+        # started answering "I've replaced the previous entry with..."
+        # without calling any tool -- new claim vocabulary that evaded
+        # chat_generation's guard, which is what leaked 3/25. Prose
+        # instructions cannot reliably make the model call a tool here (two
+        # rounds of hardening, and gpt-4o scored WORSE than gpt-4o-mini);
+        # the deterministic footer in app/channels.py is what actually
+        # protects the owner. See docs/decisions.md [2026-08-27].
+        "If instead the owner describes a NEW sale/expense/inventory change, you MUST call the "
+        "matching propose_*_entry tool for it -- describing it in text does not stage anything."
     )
 
 

@@ -20,6 +20,7 @@ import app.document_extraction as document_extraction
 import app.outbound as outbound
 import app.tasks as tasks
 from app.chat_generation import ChatAnswer
+from app.data_entry import propose_sale_entry
 from app.database import get_db
 from app.models import (
     Business,
@@ -252,6 +253,84 @@ def test_post_webhook_from_linked_number_answers_via_chat_agent(real_client, lin
         messages = db.query(Message).filter(Message.conversation_id == conversation.id).order_by(Message.created_at).all()
         assert [m.role for m in messages] == ["user", "assistant"]
         assert messages[0].content == "how did I do this week?"
+
+
+# --- [2026-08-27] pending-entry footer ---
+#
+# The model intermittently narrates a staged entry without calling
+# propose_*_entry, and prose guards proved leaky (each phrasing blocked
+# produced another). The footer is database-derived, so it states what a
+# "yes" would ACTUALLY record regardless of what the model wrote. See
+# docs/decisions.md.
+
+
+def test_reply_carries_no_footer_when_nothing_is_staged(real_client, linked_identity):
+    _, external_id = linked_identity
+    payload = _text_message_payload("wamid.nofooter", external_id, "how did I do this week?")
+    body = json.dumps(payload).encode()
+
+    real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    _, message = SENT_MESSAGES[0]
+    assert "Awaiting your confirmation" not in message
+
+
+def test_footer_states_the_real_pending_entry_even_when_the_model_says_otherwise(
+    monkeypatch, real_client, linked_identity
+):
+    """The dangerous case: the model claims it staged a coke sale, but sugar
+    is what is actually pending. Without the footer the owner replies "yes"
+    and records sugar believing it is coke."""
+    business_id, external_id = linked_identity
+
+    with TestSessionLocal() as db:
+        propose_sale_entry(db, uuid.UUID(business_id), {"product_name": "sugar", "quantity": 5, "unit_price": 20})
+        db.commit()
+
+    monkeypatch.setattr(
+        tasks,
+        "generate_chat_answer",
+        lambda db, business, question, history: ChatAnswer(
+            answer="I've staged the sale entry: 2 crates of coke at 100 each. Please confirm.",
+            tool_calls=[],
+        ),
+    )
+
+    payload = _text_message_payload("wamid.footer", external_id, "sold 2 crates of coke at 100")
+    body = json.dumps(payload).encode()
+    real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    _, message = SENT_MESSAGES[0]
+    assert "Awaiting your confirmation" in message
+    assert "sugar" in message  # the truth, not the model's "coke"
+    assert "Reply YES" in message
+
+
+def test_footer_is_not_persisted_into_conversation_history(monkeypatch, real_client, linked_identity):
+    """Stored history is replayed to the model; a stored footer would become
+    one more pattern for it to imitate instead of acting on."""
+    business_id, external_id = linked_identity
+
+    with TestSessionLocal() as db:
+        propose_sale_entry(db, uuid.UUID(business_id), {"product_name": "sugar", "quantity": 5, "unit_price": 20})
+        db.commit()
+
+    payload = _text_message_payload("wamid.footerhist", external_id, "sold 5 bags of sugar at 20")
+    body = json.dumps(payload).encode()
+    real_client.post("/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    _, sent = SENT_MESSAGES[0]
+    assert "Awaiting your confirmation" in sent
+
+    with TestSessionLocal() as db:
+        stored = (
+            db.query(Message)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .filter(Conversation.business_id == uuid.UUID(business_id), Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        assert "Awaiting your confirmation" not in stored.content
 
 
 def test_duplicate_message_id_is_not_reprocessed(real_client, linked_identity):

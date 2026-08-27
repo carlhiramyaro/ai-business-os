@@ -21,6 +21,7 @@ from app.channels import (
 )
 from app.chat_generation import generate_chat_answer
 from app.column_mapping import resolve_column_mapping
+from app.data_entry import pending_entry_footer
 from app.database import SessionLocal
 from app.document_extraction import format_extraction_summary, run_document_extraction
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
@@ -337,7 +338,18 @@ def _send_reply(db: Session, business: Business, identity: ChannelIdentity, text
     rather than re-queued: this function already runs inside a background
     task, so a second queue hop would only add latency for a reply the
     owner is actively waiting on. Insight pushes queue instead, because
-    they have no one waiting synchronously. See docs/decisions.md."""
+    they have no one waiting synchronously. See docs/decisions.md.
+
+    Appends the pending-entry footer (app/data_entry.py) when something is
+    staged, so the owner always sees what a "yes" would actually record --
+    the model's own prose about it is not trustworthy (see
+    pending_entry_footer). Appended here, at send time, rather than being
+    stored on the Message row, so it never re-enters the history the model
+    imitates."""
+    footer = pending_entry_footer(db, business.id)
+    if footer:
+        text = f"{text}\n\n{footer}"
+
     for part in format_for_channel(text, "whatsapp"):
         message = OutboundMessage(
             business_id=business.id,
