@@ -18,7 +18,7 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.entities import resolve_customer, resolve_supplier
+from app.entities import canonicalize_product_name, resolve_customer, resolve_supplier
 from app.models import Expense, Inventory, Sale
 
 DATASET_MODELS = {"sales": Sale, "inventory": Inventory, "expenses": Expense}
@@ -157,11 +157,22 @@ def ingest_rows(
     # detection runs against stable, already-typed values regardless of which
     # producer supplied them (CSV strings, JSON body values, LLM extraction
     # output).
+    # Canonicalized here in pass 1, BEFORE _content_hash runs, so "rice" and
+    # "Rice" produce the same hash and dedup detection treats them as the
+    # same row -- hashing first would make casing a silent dedup escape.
+    # The cache converges variants that appear within this one batch (see
+    # canonicalize_product_name).
+    product_name_cache: dict[str, str] = {}
+
     casted_rows = []
     for raw_row in rows:
         record_kwargs = {"business_id": business_id, "upload_session_id": upload_session_id}
         for field_name, value in raw_row.items():
             record_kwargs[field_name] = _cast_value(field_name, value)
+        if "product_name" in record_kwargs:
+            record_kwargs["product_name"] = canonicalize_product_name(
+                db, business_id, record_kwargs["product_name"], cache=product_name_cache
+            )
         casted_rows.append(record_kwargs)
 
     hashes = [_content_hash(business_id, dataset_type, row) for row in casted_rows]

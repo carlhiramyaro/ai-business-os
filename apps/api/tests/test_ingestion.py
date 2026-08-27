@@ -87,6 +87,59 @@ def test_content_hash_ignores_non_dedup_fields():
 # --- ingest_rows: the shared boundary, exercised end to end against the DB ---
 
 
+def test_ingest_rows_converges_product_name_casing(db_session):
+    """Every write path (CSV, WhatsApp data entry, document extraction, the
+    entries API) funnels through ingest_rows, so canonicalizing here is what
+    stops hand-typed "rice" from splitting away from CSV-ingested "Rice" in
+    every GROUP BY product_name. See docs/decisions.md [2026-08-27]."""
+    business, session = _seed_session(db_session)
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": "2026-01-05", "product_name": "Rice", "quantity": "1", "total_amount": "10.0"}],
+    )
+    # A later batch -- as a WhatsApp message would arrive -- with variants,
+    # including two that differ only from each other (the within-batch case).
+    summary = ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [
+            {"sale_date": "2026-01-06", "product_name": "rice", "quantity": "2", "total_amount": "20.0"},
+            {"sale_date": "2026-01-07", "product_name": "  RICE ", "quantity": "3", "total_amount": "30.0"},
+            {"sale_date": "2026-01-08", "product_name": "Palm  Oil", "quantity": "1", "total_amount": "40.0"},
+            {"sale_date": "2026-01-09", "product_name": "palm oil", "quantity": "1", "total_amount": "50.0"},
+        ],
+    )
+    assert summary.inserted == 4
+
+    names = {
+        name
+        for (name,) in db_session.query(Sale.product_name).filter(Sale.business_id == business.id).distinct()
+    }
+    # Two products, not five.
+    assert names == {"Rice", "Palm Oil"}
+
+
+def test_ingest_rows_dedup_detection_ignores_product_name_casing(db_session):
+    """Canonicalization runs before _content_hash, so a re-sent message with
+    different casing is still detected as a duplicate rather than slipping
+    past on the casing alone."""
+    business, session = _seed_session(db_session)
+    row = {"sale_date": "2026-01-05", "product_name": "Rice", "quantity": "1", "total_amount": "10.0"}
+
+    ingest_rows(db_session, business.id, session.id, "sales", [row])
+    summary = ingest_rows(
+        db_session, business.id, session.id, "sales", [{**row, "product_name": "  rIcE "}]
+    )
+
+    assert summary.duplicate_count == 1
+
+
 def test_ingest_rows_sales_casts_resolves_entities_and_sets_row_numbers(db_session):
     business, session = _seed_session(db_session)
 
