@@ -182,8 +182,18 @@ def test_post_webhook_rejects_bad_signature(real_client):
         assert db.query(WebhookEvent).count() == 0
 
 
-def test_post_webhook_from_unlinked_number_sends_instructions(real_client):
-    payload = _text_message_payload("wamid.unlinked", "233240000000", "hi")
+@pytest.mark.parametrize("greeting", ["hi", "Hello", "hey", "start"])
+def test_post_webhook_from_unlinked_number_sends_instructions(real_client, greeting):
+    """An ordinary greeting from an unlinked number must get the "here's how
+    to link" reply, NOT the "that code is invalid" one.
+
+    Asserts against the exact _LINK_INSTRUCTIONS constant rather than a
+    substring: the previous version of this test asserted `"Settings" in
+    message`, which BOTH pre-linking replies contain, so it passed against
+    the wrong branch and let a real bug ship. See docs/decisions.md
+    [2026-08-27].
+    """
+    payload = _text_message_payload(f"wamid.unlinked.{greeting}", "233240000000", greeting)
     body = json.dumps(payload).encode()
 
     response = real_client.post(
@@ -194,10 +204,30 @@ def test_post_webhook_from_unlinked_number_sends_instructions(real_client):
     assert len(SENT_MESSAGES) == 1
     to, message = SENT_MESSAGES[0]
     assert to == "233240000000"
-    assert "Settings" in message
+    assert message == tasks._LINK_INSTRUCTIONS
+    assert message != tasks._LINK_INVALID
 
     with TestSessionLocal() as db:
-        assert db.query(WebhookEvent).filter(WebhookEvent.external_id == "wamid.unlinked").count() == 1
+        assert (
+            db.query(WebhookEvent).filter(WebhookEvent.external_id == f"wamid.unlinked.{greeting}").count() == 1
+        )
+
+
+def test_post_webhook_from_unlinked_number_with_bad_code_says_code_invalid(real_client):
+    """The other side of the same branch: something that IS shaped like a
+    link code but doesn't resolve gets the invalid-code reply, so the fix
+    above didn't just make every message take the instructions path."""
+    payload = _text_message_payload("wamid.badcode", "233240000000", "ZZZZZZ")
+    body = json.dumps(payload).encode()
+
+    response = real_client.post(
+        "/api/v1/webhooks/whatsapp", content=body, headers={"X-Hub-Signature-256": _sign(body)}
+    )
+    assert response.status_code == 200
+
+    assert len(SENT_MESSAGES) == 1
+    _, message = SENT_MESSAGES[0]
+    assert message == tasks._LINK_INVALID
 
 
 def test_post_webhook_from_linked_number_answers_via_chat_agent(real_client, linked_identity):

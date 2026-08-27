@@ -15,6 +15,7 @@ from app.channels import (
     MAX_HISTORY_MESSAGES,
     format_for_channel,
     get_or_create_channel_conversation,
+    looks_like_link_code,
     redeem_link_code,
     resolve_identity,
 )
@@ -359,13 +360,11 @@ def _handle_unlinked_message(db: Session, from_wa_id: str, text: str, contact_na
     hasn't been linked." Sends the pre-linking replies directly via
     send_text (not the OutboundMessage queue -- there's no business to
     scope an audit row to, by definition, before linking succeeds)."""
-    candidate = text.strip()
-    looks_like_code = candidate and " " not in candidate and len(candidate) <= 12
-    if not looks_like_code:
+    if not looks_like_link_code(text):
         send_text(from_wa_id, _LINK_INSTRUCTIONS)
         return
 
-    identity = redeem_link_code(db, candidate, "whatsapp", from_wa_id, display_name=contact_name)
+    identity = redeem_link_code(db, text.strip(), "whatsapp", from_wa_id, display_name=contact_name)
     if identity is None:
         send_text(from_wa_id, _LINK_INVALID)
         return

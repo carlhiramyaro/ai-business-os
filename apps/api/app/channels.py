@@ -33,6 +33,27 @@ _CODE_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c 
 CODE_LENGTH = 6
 LINK_CODE_TTL_MINUTES = 10
 
+
+def looks_like_link_code(text: str) -> bool:
+    """Is this inbound message an ATTEMPT at a link code, as opposed to an
+    ordinary message from a number that hasn't linked yet? Decides which
+    pre-linking reply app/tasks.py sends -- "how to link" vs "that code is
+    invalid" -- so it must not classify a plain greeting as a code.
+
+    Matches the exact format generate_link_code produces (CODE_LENGTH
+    characters, all from _CODE_ALPHABET) rather than a looser "short and
+    spaceless" heuristic: "Hello" is 5 spaceless characters and WOULD pass
+    such a check, so the very first thing a new owner texts got answered
+    with "that code isn't valid or has expired" instead of instructions.
+    See docs/decisions.md [2026-08-27].
+
+    Case-insensitive, and tolerant of surrounding whitespace, to match
+    redeem_link_code's own `.strip().upper()` normalization -- a phone
+    keyboard autocapitalizes inconsistently and nobody shift-types a code.
+    """
+    candidate = text.strip().upper()
+    return len(candidate) == CODE_LENGTH and all(c in _CODE_ALPHABET for c in candidate)
+
 # A link code is short-lived by design (see the docstring above); a chat
 # thread over WhatsApp is not -- this bounds how much history rides along
 # on every agent call so a months-old conversation doesn't balloon context
