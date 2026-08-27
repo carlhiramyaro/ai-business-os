@@ -1,9 +1,11 @@
 import os
+import sys
 
 import structlog
 from celery import Celery
 from celery.signals import (
     beat_init,
+    setup_logging,
     task_failure,
     task_postrun,
     task_prerun,
@@ -30,6 +32,32 @@ celery_app.conf.accept_content = ["json"]
 celery_app.conf.worker_hijack_root_logger = False
 
 _logger = structlog.get_logger(__name__)
+
+
+# Configuring logging from worker_process_init alone left the worker
+# COMPLETELY silent for application logs: zero structlog events, zero task
+# "succeeded" lines, nothing from any prefork child -- only Celery's own
+# MainProcess lines, in Celery's own format. Every app log line in the
+# WhatsApp path (bad webhook signature, dropped enqueue, and the
+# chat_unverified_staging_claim guard) went nowhere, in the one process
+# that handles WhatsApp. It also explains a task that appeared to "vanish"
+# during v0.6 testing: it had succeeded, but the success line had no
+# handler to reach.
+#
+# setup_logging is the signal Celery sends INSTEAD of running its own
+# logging setup when a receiver is connected. It fires in the MainProcess
+# at startup, i.e. BEFORE the pool forks, so every child inherits the
+# handler rather than depending on a per-child signal firing. This is also
+# what makes Celery's own lines render in the same structlog format as the
+# API's, which is the point of routing stdlib loggers through
+# ProcessorFormatter in the first place (app/logging_config.py).
+#
+# worker_process_init below still runs post-fork for observability:
+# Langfuse's OTel BatchSpanProcessor uses a background thread that does not
+# survive fork(), so that one genuinely must be per-child.
+@setup_logging.connect
+def _configure_celery_logging(**kwargs):
+    configure_logging("beat" if "beat" in sys.argv else "worker")
 
 
 # Runs post-fork in each prefork worker child (and once in beat), not at
