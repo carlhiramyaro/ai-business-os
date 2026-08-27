@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, status
 from langfuse import propagate_attributes
 from sqlalchemy.orm import Session
 
+from app.channels import build_history
 from app.chat_generation import generate_chat_answer
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_conversation
@@ -51,13 +52,16 @@ def send_message(
     db.add(Message(conversation_id=conversation.id, role="user", content=payload.message))
     db.flush()
 
-    history = [
-        {"role": message.role, "content": message.content}
-        for message in db.query(Message)
+    # build_history (not a plain content list) so prior data-entry turns
+    # replay as "[Called propose_sale_entry...]" rather than as narration
+    # the model imitates instead of acting on. Same hazard as the WhatsApp
+    # path -- the tool loop is shared. See app/channels.py's build_history.
+    history = build_history(
+        db.query(Message)
         .filter(Message.conversation_id == conversation.id)
         .order_by(Message.created_at)
         .all()[:-1]  # exclude the message just added -- passed separately as the question
-    ]
+    )
 
     # session_id=conversation_id groups every LLM/embedding call this
     # request makes (up to 6 completions across the tool-calling loop plus

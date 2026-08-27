@@ -135,6 +135,52 @@ def redeem_link_code(
     return identity
 
 
+# Tools whose narration is the imitation hazard: an assistant turn saying
+# "I've staged the sale entry..." is, on the next turn, an example of how to
+# answer a data-entry message -- with no evidence in the replayed text that
+# a tool was ever involved.
+_DATA_ENTRY_TOOL_PREFIXES = ("propose_", "confirm_", "cancel_")
+
+
+def build_history(messages) -> list[dict]:
+    """Replays a conversation for the model, replacing data-entry narration
+    with a factual marker of what actually happened.
+
+    Measured against a real 20-message WhatsApp conversation, the model
+    called propose_*_entry for a new expense 11/12 times with no history and
+    12/12 with the last 4 messages -- but only 3/12 with the full history.
+    The failure scales with accumulated precedent, so it is WORST for
+    established daily users and invisible for new ones: the product degrades
+    the more an owner uses it.
+
+    `messages.tool_calls` is persisted (v0.2 slice 2) but was being dropped
+    here, so the model saw only prose. Replacing that prose with
+    "[Called propose_sale_entry...]" keeps full semantic continuity -- the
+    model still knows an entry was staged and confirmed -- while removing
+    the sentence it was copying instead of acting. Cheap stand-in for
+    replaying real tool-call turns, which OpenAI's format makes awkward
+    (each assistant tool-call turn needs a matching tool-result message, and
+    the audit trail stores arguments without results). See
+    docs/decisions.md [2026-08-27].
+
+    Only data-entry turns are rewritten; ordinary analytical answers are
+    replayed verbatim, since nothing about them invites imitation.
+    """
+    history = []
+    for message in messages:
+        content = message.content
+        if message.role == "assistant":
+            tools = [
+                call.get("tool", "")
+                for call in (message.tool_calls or [])
+                if call.get("tool", "").startswith(_DATA_ENTRY_TOOL_PREFIXES)
+            ]
+            if tools:
+                content = f"[Called {', '.join(tools)}. The result was relayed to the owner.]"
+        history.append({"role": message.role, "content": content})
+    return history
+
+
 def get_or_create_channel_conversation(db: Session, identity: ChannelIdentity) -> Conversation:
     """One rolling conversation per identity -- WhatsApp has no concept of
     "starting a new session" the way opening the web chat page does

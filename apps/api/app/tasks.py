@@ -13,6 +13,7 @@ from app.auth_maintenance import delete_expired_refresh_tokens
 from app.celery_app import celery_app
 from app.channels import (
     MAX_HISTORY_MESSAGES,
+    build_history,
     format_for_channel,
     get_or_create_channel_conversation,
     looks_like_link_code,
@@ -422,13 +423,12 @@ def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, co
         db.add(Message(conversation_id=conversation.id, role="user", content=text))
         db.flush()
 
-        history = [
-            {"role": m.role, "content": m.content}
-            for m in db.query(Message)
+        history = build_history(
+            db.query(Message)
             .filter(Message.conversation_id == conversation.id)
             .order_by(Message.created_at)
             .all()[:-1]  # exclude the message just added -- passed separately below
-        ][-MAX_HISTORY_MESSAGES:]
+        )[-MAX_HISTORY_MESSAGES:]
 
         with propagate_attributes(
             session_id=str(conversation.id), metadata={"business_id": str(business.id), "channel": "whatsapp"}
