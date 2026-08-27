@@ -190,6 +190,39 @@ def _active_pending_entry(db: Session, business_id: uuid.UUID) -> PendingEntry |
     )
 
 
+def describe_pending_entry_state(db: Session, business_id: uuid.UUID) -> str:
+    """One line of ground truth about whether anything is staged right now,
+    for injection into the model's context (app/chat_generation.py).
+
+    Exists because the model was inferring this state from its OWN earlier
+    prose. Conversation history is replayed as plain text -- `tool_calls`
+    is persisted but not replayed -- so a previous turn reading "I've
+    staged the sale entry for your review" looks, to the next turn, like
+    evidence that answering a sale message means writing that sentence. It
+    would then reproduce the sentence WITHOUT calling propose_*_entry, and
+    the owner was told their sale was staged (and later "recorded") when
+    nothing had been written. Reproducible 0/5 with such history in
+    context, 5/5 without. See docs/decisions.md [2026-08-27].
+
+    Deterministic, read from the database, no LLM involvement.
+    """
+    entry = _active_pending_entry(db, business_id)
+    if entry is None:
+        return (
+            "There is NO staged entry awaiting confirmation right now. Any earlier message of "
+            "yours claiming to have staged one did not actually do so. If the owner is "
+            "describing a sale/expense/inventory change, you MUST call the matching "
+            "propose_*_entry tool -- describing it in text does not stage anything. If they are "
+            "confirming something, there is nothing to confirm: say so and re-propose via the "
+            "tool."
+        )
+    return (
+        f"There IS a staged entry awaiting confirmation: {entry.summary} "
+        f"(type: {entry.dataset_type}). If the owner confirms, call confirm_pending_entry; "
+        "if they reject or correct it, call cancel_pending_entry."
+    )
+
+
 def confirm_pending_entry(db: Session, business_id: uuid.UUID) -> dict:
     """Casting happens here, inside ingest_rows, from the raw values
     propose_*_entry staged -- not at proposal time -- same "cast once, at

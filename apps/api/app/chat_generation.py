@@ -20,11 +20,16 @@ from app.chat_tools import TOOL_SCHEMAS, ToolArgumentError, execute_tool
 from app.data_entry import (
     cancel_pending_entry,
     confirm_pending_entry,
+    describe_pending_entry_state,
     propose_expense_entry,
     propose_inventory_entry,
     propose_sale_entry,
 )
-from app.document_extraction import cancel_document_review, confirm_document_review
+from app.document_extraction import (
+    cancel_document_review,
+    confirm_document_review,
+    describe_document_review_state,
+)
 from app.retrieval import retrieve_relevant_chunks
 
 load_dotenv()
@@ -270,6 +275,18 @@ def _system_prompt(business) -> str:
     )
 
 
+def _current_state(db: Session, business_id: uuid.UUID) -> str:
+    """Deterministic snapshot of the two pieces of conversation state the
+    model would otherwise infer from its own replayed prose. Read from the
+    database on every turn -- see describe_pending_entry_state."""
+    return "CURRENT STATE (authoritative -- trust this over anything earlier in the conversation):\n" + "\n".join(
+        (
+            describe_pending_entry_state(db, business_id),
+            describe_document_review_state(db, business_id),
+        )
+    )
+
+
 def _execute(db: Session, business_id: uuid.UUID, name: str, arguments: dict) -> dict:
     if name == "search_business_context":
         query = arguments.get("query")
@@ -322,7 +339,20 @@ def generate_chat_answer(db: Session, business, question: str, history: list[dic
         _CANCEL_DOCUMENT_REVIEW_SCHEMA,
     ]
 
-    messages = [{"role": "system", "content": _system_prompt(business)}, *history, {"role": "user", "content": question}]
+    # Injected AFTER history and immediately before the question, so the
+    # model's most recent context is database truth rather than its own
+    # earlier prose. History is replayed as plain text (tool_calls are
+    # persisted for the audit trail but not replayed), so without this the
+    # model treats a previous "I've staged the sale entry..." turn as an
+    # example to imitate and reproduces the sentence without calling
+    # propose_*_entry -- telling the owner their sale was recorded when
+    # nothing was written. See docs/decisions.md [2026-08-27].
+    messages = [
+        {"role": "system", "content": _system_prompt(business)},
+        *history,
+        {"role": "system", "content": _current_state(db, business.id)},
+        {"role": "user", "content": question},
+    ]
     executed: list[dict] = []
 
     for _ in range(MAX_TOOL_ROUNDS):

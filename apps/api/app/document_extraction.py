@@ -200,6 +200,19 @@ def _active_document_review(db: Session, business_id: uuid.UUID) -> UploadSessio
     )
 
 
+def describe_document_review_state(db: Session, business_id: uuid.UUID) -> str:
+    """Document-review counterpart to data_entry.describe_pending_entry_state
+    -- same reasoning, same failure mode (the model inferring state from its
+    own replayed prose). Deterministic, no LLM."""
+    session = _active_document_review(db, business_id)
+    if session is None:
+        return "There is NO photographed document awaiting review right now."
+    return (
+        "There IS a photographed document awaiting review. If the owner confirms it, call "
+        "confirm_document_review; if they reject it, call cancel_document_review."
+    )
+
+
 def confirm_document_review(db: Session, business_id: uuid.UUID) -> dict:
     """The WhatsApp chat-tool equivalent of the web review screen's
     "Confirm" button (app/routers/documents.py's POST .../confirm) --
