@@ -177,3 +177,97 @@ def test_document_review_scoped_to_business(db_session):
 
     assert result["confirmed"] is False
     assert db_session.query(Expense).count() == 0
+
+
+# --- [2026-08-31] every committed document row must carry a date ---
+#
+# Found in live v0.6 testing: a photographed Costco receipt produced four
+# expenses with expense_date NULL. Undated rows are invisible to every
+# date-range query -- reports, "how did I do this month", any period-scoped
+# profit -- so the money sat in the table but vanished from the analysis,
+# with totals that still looked plausible (August read 200 instead of
+# 258.46). A receipt prints its date once in the header, not per line, so
+# the model was correctly not repeating it per row. See docs/decisions.md.
+
+
+def test_parse_extraction_applies_document_date_to_every_row():
+    raw = {
+        "documentDate": "2026-08-15",
+        "rows": [{"vendor": "Costco", "amount": "24.99"}, {"vendor": "Costco", "amount": "4.99"}],
+        "confidence": 0.9,
+    }
+    result = _parse_extraction_response(raw, "expenses")
+
+    assert [r["expenseDate"] for r in result["rows"]] == ["2026-08-15", "2026-08-15"]
+
+
+def test_parse_extraction_per_row_date_beats_the_document_date():
+    """An invoice can legitimately list items from different days."""
+    raw = {
+        "documentDate": "2026-08-15",
+        "rows": [{"amount": "10", "expenseDate": "2026-08-01"}, {"amount": "20"}],
+        "confidence": 0.9,
+    }
+    result = _parse_extraction_response(raw, "expenses")
+
+    assert [r["expenseDate"] for r in result["rows"]] == ["2026-08-01", "2026-08-15"]
+
+
+def test_parse_extraction_without_a_document_date_leaves_rows_undated():
+    """Extraction never invents a date -- the commit-time fallback owns that,
+    so a genuinely illegible date stays visible as missing until then."""
+    result = _parse_extraction_response({"rows": [{"amount": "10"}], "confidence": 0.5}, "expenses")
+
+    assert "expenseDate" not in result["rows"][0]
+
+
+def test_parse_extraction_ignores_a_blank_document_date():
+    result = _parse_extraction_response(
+        {"documentDate": "   ", "rows": [{"amount": "10"}], "confidence": 0.5}, "expenses"
+    )
+
+    assert "expenseDate" not in result["rows"][0]
+
+
+def test_parse_extraction_document_date_is_a_no_op_for_inventory():
+    """Inventory has no date field; a documentDate must not invent one."""
+    result = _parse_extraction_response(
+        {"documentDate": "2026-08-15", "rows": [{"productName": "Rice", "quantity": 5}], "confidence": 0.9},
+        "inventory",
+    )
+
+    assert result["rows"] == [{"productName": "Rice", "quantity": 5}]
+
+
+def test_confirm_document_review_dates_undated_rows_from_the_upload(db_session):
+    """The commit-time backstop: a row must never reach the database
+    undated, because nothing downstream can see it if it does."""
+    business = _seed_business(db_session)
+    uploaded_at = datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc)
+    _seed_needs_review_document(
+        db_session,
+        business,
+        rows=[{"vendor": "Costco", "amount": "24.99"}],
+        uploaded_at=uploaded_at,
+    )
+
+    confirm_document_review(db_session, business.id)
+
+    expense = db_session.query(Expense).one()
+    assert expense.expense_date == uploaded_at.date()
+
+
+def test_confirm_document_review_keeps_a_date_the_receipt_supplied(db_session):
+    """The fallback must not overwrite a real date read off the receipt."""
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session,
+        business,
+        rows=[{"vendor": "Costco", "amount": "24.99", "expenseDate": "2026-07-04"}],
+        uploaded_at=datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc),
+    )
+
+    confirm_document_review(db_session, business.id)
+
+    expense = db_session.query(Expense).one()
+    assert expense.expense_date.isoformat() == "2026-07-04"
