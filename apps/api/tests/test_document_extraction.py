@@ -2,9 +2,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.document_extraction import (
+    DOCUMENT_REVIEW_TTL_HOURS,
     _parse_extraction_response,
     cancel_document_review,
     confirm_document_review,
+    describe_document_review_state,
+    document_review_footer,
     format_extraction_summary,
 )
 from app.models import Business, DocumentExtraction, Expense, UploadSession, User
@@ -243,7 +246,9 @@ def test_confirm_document_review_dates_undated_rows_from_the_upload(db_session):
     """The commit-time backstop: a row must never reach the database
     undated, because nothing downstream can see it if it does."""
     business = _seed_business(db_session)
-    uploaded_at = datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc)
+    # Within DOCUMENT_REVIEW_TTL_HOURS -- an expired review is not
+    # confirmable at all, which is a different test below.
+    uploaded_at = datetime.now(timezone.utc) - timedelta(hours=2)
     _seed_needs_review_document(
         db_session,
         business,
@@ -264,10 +269,124 @@ def test_confirm_document_review_keeps_a_date_the_receipt_supplied(db_session):
         db_session,
         business,
         rows=[{"vendor": "Costco", "amount": "24.99", "expenseDate": "2026-07-04"}],
-        uploaded_at=datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc),
+        uploaded_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
 
     confirm_document_review(db_session, business.id)
 
     expense = db_session.query(Expense).one()
     assert expense.expense_date.isoformat() == "2026-07-04"
+
+
+# --- [2026-08-31] two receipts in review at once ---
+#
+# Two photos sent before confirming either both produce a "reply YES to
+# record these" prompt, but a single YES resolves only the MOST RECENT
+# (last-in-first-out, which nobody would guess) and nothing said the other
+# was still waiting. Document reviews also had no TTL at all, while pending
+# entries expire after 30 minutes -- so a forgotten receipt stayed
+# confirmable forever, and describe_document_review_state kept telling the
+# model a document awaited review, meaning an unrelated "yes" weeks later
+# could record it. See docs/decisions.md.
+
+
+def test_confirm_resolves_the_most_recent_and_leaves_the_earlier_waiting(db_session):
+    """Not data loss -- the earlier receipt survives a later YES -- but the
+    owner has no way to know which one they just recorded."""
+    business = _seed_business(db_session)
+    first = _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "FirstShop", "amount": "111.00"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    second = _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "SecondShop", "amount": "222.00"}]
+    )
+
+    confirm_document_review(db_session, business.id)
+
+    assert [e.vendor for e in db_session.query(Expense).all()] == ["SecondShop"]
+    assert db_session.get(UploadSession, second.id).status == "COMPLETED"
+    assert db_session.get(UploadSession, first.id).status == "NEEDS_REVIEW"
+
+
+def test_document_review_footer_names_the_single_waiting_document(db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "Costco", "amount": "24.99"}]
+    )
+
+    footer = document_review_footer(db_session, business.id)
+
+    assert "Awaiting your confirmation" in footer
+    assert "Costco" in footer
+    assert "Reply YES" in footer
+
+
+def test_document_review_footer_surfaces_the_backlog(db_session):
+    """The owner must be told a YES leaves others waiting."""
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "FirstShop", "amount": "111.00"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "SecondShop", "amount": "222.00"}]
+    )
+
+    footer = document_review_footer(db_session, business.id)
+
+    assert "2 photos awaiting review" in footer
+    assert "SecondShop" in footer  # the one a YES actually records
+    assert "others stay waiting" in footer
+
+
+def test_document_review_footer_is_none_when_nothing_waits(db_session):
+    business = _seed_business(db_session)
+    assert document_review_footer(db_session, business.id) is None
+
+
+def test_expired_document_review_is_not_confirmable(db_session):
+    """A receipt left unconfirmed past the TTL must not be recorded by an
+    unrelated 'yes' later -- the wrong record under the owner's
+    confirmation."""
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session,
+        business,
+        rows=[{"vendor": "StaleShop", "amount": "999.00"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(hours=DOCUMENT_REVIEW_TTL_HOURS + 1),
+    )
+
+    assert document_review_footer(db_session, business.id) is None
+    assert "NO photographed document" in describe_document_review_state(db_session, business.id)
+
+    result = confirm_document_review(db_session, business.id)
+    assert result["confirmed"] is False
+    assert db_session.query(Expense).count() == 0
+
+
+def test_document_review_within_ttl_is_still_confirmable(db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session,
+        business,
+        rows=[{"vendor": "FreshShop", "amount": "10.00"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(hours=DOCUMENT_REVIEW_TTL_HOURS - 1),
+    )
+
+    assert confirm_document_review(db_session, business.id)["confirmed"] is True
+    assert db_session.query(Expense).one().vendor == "FreshShop"
+
+
+def test_state_description_tells_the_model_about_multiple_reviews(db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "A", "amount": "1"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    _seed_needs_review_document(db_session, business, rows=[{"vendor": "B", "amount": "2"}])
+
+    state = describe_document_review_state(db_session, business.id)
+
+    assert "2 photographed documents" in state
+    assert "MOST RECENT" in state

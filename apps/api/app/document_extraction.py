@@ -21,7 +21,7 @@ import base64
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -42,6 +42,12 @@ from app.storage import document_key_for, download_fileobj
 load_dotenv()
 
 VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
+
+# How long a photographed document stays confirmable by a chat "yes".
+# Longer than app/data_entry.py's PENDING_ENTRY_TTL_MINUTES (30) because
+# photographing a receipt and getting round to confirming it can reasonably
+# span a working day. See _pending_document_reviews.
+DOCUMENT_REVIEW_TTL_HOURS = int(os.getenv("DOCUMENT_REVIEW_TTL_HOURS", "24"))
 
 # The canonical date field per dataset, in CANONICAL_FIELDS' camelCase (the
 # snake_case ORM equivalents live in app/ingestion.py's
@@ -233,16 +239,83 @@ def format_extraction_summary(dataset_type: str, rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _active_document_review(db: Session, business_id: uuid.UUID) -> UploadSession | None:
+def _pending_document_reviews(db: Session, business_id: uuid.UUID) -> list[UploadSession]:
+    """Every un-reviewed document for this business, newest first, ignoring
+    any older than DOCUMENT_REVIEW_TTL_HOURS.
+
+    The TTL exists because these had none at all, while pending entries
+    expire after 30 minutes. A photographed receipt left unconfirmed sat in
+    NEEDS_REVIEW forever, AND describe_document_review_state told the model
+    on every subsequent turn that a document was awaiting review -- so an
+    unrelated "yes" weeks later could record a receipt from long ago. Same
+    wrong-record-under-the-owner's-confirmation shape as the data-entry bug
+    (docs/decisions.md [2026-08-27]), but with a permanent window instead of
+    a 30-minute one.
+
+    A day rather than 30 minutes: photographing a receipt and getting round
+    to confirming it can reasonably span a working day, in a way that
+    correcting a typed sale cannot. Expired reviews are left in the table
+    (status is unchanged, the image and extraction stay) -- they simply stop
+    being confirmable by a stray "yes", and remain visible in the web review
+    screen.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=DOCUMENT_REVIEW_TTL_HOURS)
     return (
         db.query(UploadSession)
         .filter(
             UploadSession.business_id == business_id,
             UploadSession.source_type == "document",
             UploadSession.status == "NEEDS_REVIEW",
+            UploadSession.uploaded_at > cutoff,
         )
         .order_by(UploadSession.uploaded_at.desc())
-        .first()
+        .all()
+    )
+
+
+def _active_document_review(db: Session, business_id: uuid.UUID) -> UploadSession | None:
+    """The one a "yes" resolves: the most recent un-reviewed document."""
+    reviews = _pending_document_reviews(db, business_id)
+    return reviews[0] if reviews else None
+
+
+def document_review_footer(db: Session, business_id: uuid.UUID) -> str | None:
+    """Owner-facing, database-derived statement of which photographed
+    document a "yes" would actually record. None when none is waiting.
+
+    Counterpart to data_entry.pending_entry_footer, and added for the same
+    reason plus one of its own. Two receipts sent before confirming either
+    both produce a "reply YES to record these" prompt, but a single YES
+    resolves only the MOST RECENT (last-in-first-out, which nobody would
+    guess) and says nothing about the other still waiting. Naming the
+    document and the queue depth makes both the choice and the backlog
+    visible before the owner answers.
+
+    Appended at send time only (app/tasks.py's _send_reply), never stored
+    on the Message row -- stored history is replayed to the model, and a
+    stored footer would become one more pattern for it to imitate rather
+    than act on.
+    """
+    reviews = _pending_document_reviews(db, business_id)
+    if not reviews:
+        return None
+
+    extraction = (
+        db.query(DocumentExtraction)
+        .filter(DocumentExtraction.upload_session_id == reviews[0].id)
+        .one_or_none()
+    )
+    rows = extraction.extracted_rows if extraction else []
+    descriptor = f"{len(rows)} item{'s' if len(rows) != 1 else ''}"
+    vendors = {str(r.get("vendor")).strip() for r in rows if r.get("vendor")}
+    if len(vendors) == 1:
+        descriptor = f"{descriptor} from {vendors.pop()}"
+
+    if len(reviews) == 1:
+        return f"📄 Awaiting your confirmation: the photo you sent ({descriptor})\nReply YES to record it, or NO to discard it."
+    return (
+        f"📄 {len(reviews)} photos awaiting review. YES records the most recent one ({descriptor}); "
+        "the others stay waiting for a later YES."
     )
 
 
@@ -250,12 +323,21 @@ def describe_document_review_state(db: Session, business_id: uuid.UUID) -> str:
     """Document-review counterpart to data_entry.describe_pending_entry_state
     -- same reasoning, same failure mode (the model inferring state from its
     own replayed prose). Deterministic, no LLM."""
-    session = _active_document_review(db, business_id)
-    if session is None:
+    reviews = _pending_document_reviews(db, business_id)
+    if not reviews:
         return "There is NO photographed document awaiting review right now."
+    if len(reviews) == 1:
+        return (
+            "There IS a photographed document awaiting review. If the owner confirms it, call "
+            "confirm_document_review; if they reject it, call cancel_document_review."
+        )
+    # Each call resolves only the most recent, so the owner needs telling
+    # that more remain -- otherwise a single "yes" silently leaves a backlog
+    # they have no way to know about.
     return (
-        "There IS a photographed document awaiting review. If the owner confirms it, call "
-        "confirm_document_review; if they reject it, call cancel_document_review."
+        f"There are {len(reviews)} photographed documents awaiting review. confirm_document_review "
+        "and cancel_document_review each act on the MOST RECENT one only; say plainly that the "
+        "others are still waiting and can be confirmed one at a time."
     )
 
 

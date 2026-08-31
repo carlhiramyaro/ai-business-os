@@ -24,7 +24,11 @@ from app.chat_generation import generate_chat_answer
 from app.column_mapping import resolve_column_mapping
 from app.data_entry import pending_entry_footer
 from app.database import SessionLocal
-from app.document_extraction import format_extraction_summary, run_document_extraction
+from app.document_extraction import (
+    document_review_footer,
+    format_extraction_summary,
+    run_document_extraction,
+)
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.insight_delivery import collect_and_queue_digests
 from app.insights_generation import run_business_analysis
@@ -347,9 +351,13 @@ def _send_reply(db: Session, business: Business, identity: ChannelIdentity, text
     pending_entry_footer). Appended here, at send time, rather than being
     stored on the Message row, so it never re-enters the history the model
     imitates."""
-    footer = pending_entry_footer(db, business.id)
-    if footer:
-        text = f"{text}\n\n{footer}"
+    # Both kinds of "awaiting your yes" state get a footer. They are
+    # mutually exclusive in practice (a photo and a typed entry are not
+    # normally in flight at once) but both are appended if both exist,
+    # rather than picking one and leaving the other invisible.
+    for footer in (pending_entry_footer(db, business.id), document_review_footer(db, business.id)):
+        if footer:
+            text = f"{text}\n\n{footer}"
 
     for part in format_for_channel(text, "whatsapp"):
         message = OutboundMessage(
