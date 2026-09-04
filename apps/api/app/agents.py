@@ -83,7 +83,22 @@ def run_manager_agent(agent_findings: dict) -> dict:
     return _call_llm(system, json.dumps(agent_findings))
 
 
-def narrate_insight(signal: dict, relevant_facts: list[str] | None = None) -> dict:
+def currency_clause(currency: str | None) -> str:
+    """Prompt fragment naming the currency every figure is in.
+
+    Without it the model reaches for "$": a live insight read "revenue
+    dropped from $790 last week" for a GHS business -- not merely unlabelled
+    (the [2026-08-27] chat bug) but confidently WRONG, and read as USD by a
+    Ghanaian owner that is roughly a 12x overstatement. Shared so the report
+    agents can adopt the same wording when their currency is threaded
+    through the graph state. See docs/decisions.md [2026-09-04].
+    """
+    if not currency:
+        return "Amounts are in the business's local currency; never write a currency symbol you were not given. "
+    return f"All amounts are in {currency}. Write figures as '{currency} 790', never with a '$' or any other symbol. "
+
+
+def narrate_insight(signal: dict, relevant_facts: list[str] | None = None, currency: str | None = None) -> dict:
     """v0.4 slice 2: turn one deterministic signal (app/signals.py) into the
     explain-and-recommend voice from product-vision.md's rice example.
     Given the signal's computed metrics, explain what's happening and
@@ -96,7 +111,7 @@ def narrate_insight(signal: dict, relevant_facts: list[str] | None = None) -> di
     as alarming -- but they never substitute for or override the metrics."""
     system = (
         f"You are narrating a single detected '{signal['type']}' business signal for a "
-        "small-business owner. You are given the deterministically computed metrics behind "
+        "small-business owner. " + currency_clause(currency) + "You are given the deterministically computed metrics behind "
         "it -- explain what's happening in plain language and recommend one concrete next "
         'step. Respond as strict JSON: {"title": "one short headline (under 10 words)", '
         '"body": "2-3 sentences: what\'s happening, why it matters, what to do"}. Cite the '

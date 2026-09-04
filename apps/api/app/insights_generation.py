@@ -149,7 +149,12 @@ def _run_business_analysis_body(db: Session, business: Business, today: date | N
             top_k=RELEVANT_FACTS_TOP_K,
             source_types=["business_fact"],
         )
-        narration = narrate_insight(signal, relevant_facts=relevant_facts)
+        # business.currency is NOT NULL since [2026-08-27], but read
+        # defensively: narrate_insight falls back to "the business's local
+        # currency" rather than letting the model invent "$".
+        narration = narrate_insight(
+            signal, relevant_facts=relevant_facts, currency=getattr(business, "currency", None)
+        )
         insight = Insight(
             business_id=business.id,
             insight_type=signal["type"],
