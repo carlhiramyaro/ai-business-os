@@ -11,6 +11,7 @@ interface with three producers") and docs/decisions.md [2026-07-24].
 
 import hashlib
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
@@ -109,12 +110,49 @@ class IngestSummary:
     created_ids: list[uuid.UUID]
 
 
+def parse_date_value(value):
+    """Parse a date the way this product's market writes them.
+
+    `pd.to_datetime` defaults to the US MM/DD reading, so a receipt or
+    spreadsheet saying 06/08/2022 became 8 June instead of 6 August. Ghana
+    (like the UK) writes DD/MM, and roughly 39% of dates -- any where both
+    parts are <= 12 -- are ambiguous, so they parsed to a plausible but
+    wrong date, silently, off by up to 11 months. Found in live v0.6
+    testing on a photographed receipt; it affected the CSV path equally,
+    which has shipped since v0.1. See docs/decisions.md [2026-09-04].
+
+    ISO is tried FIRST and wins, because `dayfirst=True` corrupts it:
+    pandas reads "2022-06-08" as 6 August under that flag. ISO is
+    unambiguous by definition, and it is what the document-extraction
+    prompt asks the vision model for, so it must never be reinterpreted.
+
+    Genuinely unambiguous slash dates (13/08/2022, 08/19/2021) parse the
+    same either way -- only the ambiguous middle is affected, and there
+    DD/MM is the right guess for this market.
+    """
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+
+    if isinstance(value, str):
+        try:
+            return date_type.fromisoformat(value.strip())
+        except ValueError:
+            pass
+
+    with warnings.catch_warnings():
+        # pandas warns whenever a value's real layout contradicts dayfirst;
+        # that is the ambiguity this function exists to resolve, not
+        # something a caller can act on.
+        warnings.simplefilter("ignore", UserWarning)
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    return None if pd.isna(parsed) else parsed.date()
+
+
 def _cast_value(field_name: str, value):
     if pd.isna(value):
         return None
     if field_name in DATE_FIELDS:
-        parsed = pd.to_datetime(value, errors="coerce")
-        return None if pd.isna(parsed) else parsed.date()
+        return parse_date_value(value)
     if field_name in INT_FIELDS:
         try:
             return int(value)
