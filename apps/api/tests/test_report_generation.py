@@ -197,3 +197,38 @@ def test_generate_report_is_cumulative_across_upload_sessions_within_period(monk
     # $100 from each of the two upload sessions' sales -- proves both were included.
     assert "200.0" in finance_call_content
     assert first_upload_session.id != second_upload_session.id
+
+
+# --- [2026-09-04] every report agent must name the business's currency ---
+#
+# The four analysts and the manager all built prompts without it, so a GHS
+# business's Business Health Report narrated in "$" -- the same bug found
+# live in insight narration, and worse in a report because that is the
+# artefact an owner is most likely to save or forward. The agents run as
+# LangGraph nodes that only receive state, so currency had to become a
+# ReportState field rather than a parameter. See docs/decisions.md.
+
+
+def test_every_agent_prompt_carries_the_business_currency(monkeypatch, db_session):
+    prompts = []
+
+    def recording_fake_call_llm(system_prompt, user_content):
+        prompts.append(system_prompt)
+        return fake_call_llm(system_prompt, user_content)
+
+    monkeypatch.setattr("app.agents._call_llm", recording_fake_call_llm)
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
+
+    business, upload_session = _seed_business_with_data(db_session)
+    business.currency = "GHS"
+    db_session.flush()
+
+    generate_report(
+        db_session, business, period_start=PERIOD_START, period_end=PERIOD_END, upload_session_id=upload_session.id
+    )
+
+    # Four analysts plus the manager -- all five, not just the ones that
+    # happen to mention money.
+    assert len(prompts) == 5
+    assert all("GHS" in prompt for prompt in prompts), [p[:60] for p in prompts if "GHS" not in p]
+    assert all("$" not in prompt.replace("never with a '$'", "") for prompt in prompts)

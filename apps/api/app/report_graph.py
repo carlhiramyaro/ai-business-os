@@ -7,6 +7,12 @@ from app.agents import run_finance_agent, run_inventory_agent, run_manager_agent
 
 
 class ReportState(TypedDict, total=False):
+    # Not a metric -- narration context every agent needs. Without it each
+    # agent's prompt had no currency to name and the model reached for "$",
+    # so a GHS business's report read "$790". Same bug as insights
+    # [2026-09-04], and the reason it needed a state field rather than a
+    # parameter: the agents run as graph nodes that only receive state.
+    currency: str
     finance_metrics: dict
     inventory_metrics: dict
     marketing_metrics: dict
@@ -31,7 +37,7 @@ def _timed(agent_name: str, runner):
 
     def node(state: ReportState) -> dict:
         started_at = datetime.now(timezone.utc)
-        result = runner(state[f"{agent_name}_metrics"])
+        result = runner(state[f"{agent_name}_metrics"], currency=state.get("currency"))
         completed_at = datetime.now(timezone.utc)
         return {
             f"{agent_name}_result": result,
@@ -54,7 +60,7 @@ def _manager_node(state: ReportState) -> dict:
         "operations": state["operations_result"],
         "forecast": state["forecast_metrics"],
     }
-    result = run_manager_agent(findings)
+    result = run_manager_agent(findings, currency=state.get("currency"))
     completed_at = datetime.now(timezone.utc)
     return {
         "manager_result": result,
