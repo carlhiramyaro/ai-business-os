@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 # receive upload_session_id itself.
 from langfuse import observe, propagate_attributes
 from langfuse.openai import OpenAI
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.column_mapping import CANONICAL_FIELDS
@@ -258,15 +259,29 @@ def _pending_document_reviews(db: Session, business_id: uuid.UUID) -> list[Uploa
     (status is unchanged, the image and extraction stay) -- they simply stop
     being confirmable by a stray "yes", and remain visible in the web review
     screen.
+
+    Extractions that found NOTHING are excluded for the same reason. A photo
+    of something that isn't a receipt legitimately yields zero rows (verified
+    live: 0 rows at 0.0 confidence, versus 9 rows at 0.98 for a real
+    receipt), and the owner is already told "I couldn't read anything clearly
+    from that photo". Offering it for confirmation on top of that asked them
+    to record nothing -- "Awaiting your confirmation: the photo you sent (0
+    items). Reply YES to record it" -- which contradicts the message directly
+    above it, and left an empty review as the one a later "yes" would resolve.
+    The session stays NEEDS_REVIEW so the web review screen can still show
+    the failed photo; it is simply not confirmable by chat.
+    See docs/decisions.md [2026-09-04].
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=DOCUMENT_REVIEW_TTL_HOURS)
     return (
         db.query(UploadSession)
+        .join(DocumentExtraction, DocumentExtraction.upload_session_id == UploadSession.id)
         .filter(
             UploadSession.business_id == business_id,
             UploadSession.source_type == "document",
             UploadSession.status == "NEEDS_REVIEW",
             UploadSession.uploaded_at > cutoff,
+            func.jsonb_array_length(DocumentExtraction.extracted_rows) > 0,
         )
         .order_by(UploadSession.uploaded_at.desc())
         .all()

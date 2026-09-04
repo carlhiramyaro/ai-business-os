@@ -390,3 +390,59 @@ def test_state_description_tells_the_model_about_multiple_reviews(db_session):
 
     assert "2 photographed documents" in state
     assert "MOST RECENT" in state
+
+
+# --- [2026-09-04] an extraction that found nothing is not confirmable ---
+#
+# Found live by photographing something that isn't a receipt. Extraction
+# correctly declined (0 rows, 0.0 confidence, versus 9 rows at 0.98 for a
+# real receipt) and the owner was told "I couldn't read anything clearly
+# from that photo" -- then immediately asked "Awaiting your confirmation:
+# the photo you sent (0 items). Reply YES to record it", contradicting the
+# sentence above it. See docs/decisions.md.
+
+
+def test_empty_extraction_is_not_offered_for_confirmation(db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(db_session, business, rows=[])
+
+    assert document_review_footer(db_session, business.id) is None
+    assert "NO photographed document" in describe_document_review_state(db_session, business.id)
+
+
+def test_empty_extraction_cannot_be_confirmed_by_chat(db_session):
+    business = _seed_business(db_session)
+    _seed_needs_review_document(db_session, business, rows=[])
+
+    result = confirm_document_review(db_session, business.id)
+
+    assert result["confirmed"] is False
+    assert db_session.query(Expense).count() == 0
+
+
+def test_empty_extraction_does_not_mask_a_real_one(db_session):
+    """A failed photo must not become the review a later YES resolves, nor
+    hide a good extraction sent before it."""
+    business = _seed_business(db_session)
+    _seed_needs_review_document(
+        db_session, business, rows=[{"vendor": "RealShop", "amount": "12.00"}],
+        uploaded_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    _seed_needs_review_document(db_session, business, rows=[])  # newer, but empty
+
+    footer = document_review_footer(db_session, business.id)
+    assert "RealShop" in footer
+    # One confirmable document, not two -- the empty one is not counted.
+    assert "photos awaiting review" not in footer
+
+    confirm_document_review(db_session, business.id)
+    assert db_session.query(Expense).one().vendor == "RealShop"
+
+
+def test_empty_extraction_session_is_still_visible_for_web_review(db_session):
+    """Excluded from chat confirmation, not deleted -- the web review screen
+    should still show the photo that failed."""
+    business = _seed_business(db_session)
+    session = _seed_needs_review_document(db_session, business, rows=[])
+
+    assert db_session.get(UploadSession, session.id).status == "NEEDS_REVIEW"
