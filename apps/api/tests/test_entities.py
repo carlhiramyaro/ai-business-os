@@ -1,7 +1,14 @@
 import uuid
+from datetime import date
 
-from app.entities import normalize_entity_name, resolve_customer, resolve_supplier
-from app.models import Business, Customer, Supplier, User
+from app.entities import (
+    canonicalize_product_name,
+    normalize_entity_name,
+    resolve_customer,
+    resolve_supplier,
+)
+from app.ingestion import ingest_rows
+from app.models import Business, Customer, Supplier, UploadSession, User
 from app.security import hash_password
 
 
@@ -20,6 +27,66 @@ def test_normalize_entity_name():
     assert normalize_entity_name("AMA MENSAH") == "ama mensah"
     assert normalize_entity_name(None) is None
     assert normalize_entity_name("   ") is None
+
+
+# [2026-08-27] Product names typed by hand over WhatsApp ("rice") split
+# reporting away from CSV-ingested ones ("Rice") -- every GROUP BY
+# product_name showed one product as several. See docs/decisions.md.
+def _sale(db_session, business, product_name, amount=10):
+    """Goes through ingest_rows rather than constructing a Sale directly --
+    `upload_session_id` and `content_hash` are NOT NULL, and ingest_rows is
+    the only thing that populates them (and the boundary under test)."""
+    session = UploadSession(business_id=business.id, source_type="csv", status="PROCESSING")
+    db_session.add(session)
+    db_session.flush()
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": date(2026, 8, 1), "product_name": product_name, "quantity": 1, "total_amount": amount}],
+    )
+
+
+def test_canonicalize_product_name_reuses_existing_casing(db_session):
+    business = _seed_business(db_session)
+    _sale(db_session, business, "Rice")
+
+    for variant in ("rice", "RICE", "  Rice  ", "rice"):
+        assert canonicalize_product_name(db_session, business.id, variant) == "Rice"
+
+
+def test_canonicalize_product_name_keeps_first_seen_casing_for_new_product(db_session):
+    business = _seed_business(db_session)
+    # Nothing stored yet -- the typed casing is kept, only spacing cleaned.
+    assert canonicalize_product_name(db_session, business.id, "  Palm   Oil ") == "Palm Oil"
+
+
+def test_canonicalize_product_name_converges_variants_within_one_batch(db_session):
+    """No row exists to db.flush() between two variants in the same batch,
+    so without the cache each would miss the other and both would persist."""
+    business = _seed_business(db_session)
+    cache: dict[str, str] = {}
+
+    first = canonicalize_product_name(db_session, business.id, "Malt", cache=cache)
+    second = canonicalize_product_name(db_session, business.id, "malt", cache=cache)
+
+    assert first == second == "Malt"
+
+
+def test_canonicalize_product_name_is_scoped_per_business(db_session):
+    business_a = _seed_business(db_session)
+    business_b = _seed_business(db_session)
+    _sale(db_session, business_a, "Rice")
+
+    # B has never sold rice -- it must not inherit A's spelling.
+    assert canonicalize_product_name(db_session, business_b.id, "RICE") == "RICE"
+
+
+def test_canonicalize_product_name_handles_blank_and_none(db_session):
+    business = _seed_business(db_session)
+    assert canonicalize_product_name(db_session, business.id, None) is None
+    assert canonicalize_product_name(db_session, business.id, "   ") is None
 
 
 def test_resolve_customer_get_or_create_dedupes_variants(db_session):

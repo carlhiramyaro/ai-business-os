@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import app.tasks as tasks
 from app.business_facts import remember_fact
+from app.agents import currency_clause, narrate_insight
 from app.insights_generation import run_business_analysis
 from app.models import Business, BusinessFact, Embedding, Expense, Insight, Inventory, Sale, UploadSession, User
 from app.security import hash_password
@@ -284,3 +285,77 @@ def test_insights_scoped_to_owning_business(client, db_session):
 
     response = client.get(f"/api/v1/businesses/{business_a['id']}/insights/", headers=auth_header(token_b))
     assert response.status_code == 403
+
+
+# --- [2026-09-04] insight narration must name the business's currency ---
+#
+# A live proactive insight read "revenue dropped from $790 last week" for a
+# GHS business. narrate_insight never received the business at all, so the
+# model reached for "$". Unlike the [2026-08-27] chat bug (an unlabelled
+# number) this is confidently WRONG: read as USD by a Ghanaian owner it is
+# roughly a 12x overstatement. See docs/decisions.md.
+
+
+def test_currency_clause_names_the_currency_and_forbids_symbols():
+    clause = currency_clause("GHS")
+    assert "GHS" in clause
+    assert "never" in clause.lower()
+    assert "$" in clause  # names the symbol it must not use
+
+
+def test_currency_clause_without_a_currency_still_forbids_inventing_one():
+    clause = currency_clause(None)
+    assert "local currency" in clause
+    assert "never" in clause.lower()
+
+
+def test_narrate_insight_prompt_carries_the_currency(monkeypatch):
+    calls = []
+
+    def recording(system_prompt, user_content):
+        calls.append(system_prompt)
+        return {"title": "t", "body": "b"}
+
+    monkeypatch.setattr("app.agents._call_llm", recording)
+    narrate_insight({"type": "revenue_drop", "metrics": {"current": 0}}, currency="GHS")
+
+    assert "GHS" in calls[0]
+
+
+def test_run_business_analysis_passes_the_business_currency_to_narration(monkeypatch):
+    """End to end through the real analysis path -- the regression that
+    matters is the business's currency reaching the prompt, not the clause
+    function in isolation."""
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
+    monkeypatch.setattr("app.retrieval.generate_embedding", lambda text: [0.0] * 1536)
+
+    calls = []
+
+    def recording_fake_call_llm(system_prompt, user_content):
+        calls.append(system_prompt)
+        return fake_narration_llm(system_prompt, user_content)
+
+    monkeypatch.setattr("app.agents._call_llm", recording_fake_call_llm)
+
+    db = TestSessionLocal()
+    try:
+        business = _seed_business_with_signals(db)
+        business.currency = "GHS"
+        db.commit()
+
+        run_business_analysis(db, business, today=TODAY)
+
+        narration_prompts = [c for c in calls if "narrating a single detected" in c]
+        assert narration_prompts, "expected at least one narrate_insight call"
+        assert all("GHS" in prompt for prompt in narration_prompts)
+    finally:
+        db.query(Insight).filter(Insight.business_id == business.id).delete()
+        db.query(Embedding).filter(Embedding.business_id == business.id).delete()
+        db.query(Sale).filter(Sale.business_id == business.id).delete()
+        db.query(Inventory).filter(Inventory.business_id == business.id).delete()
+        db.query(Expense).filter(Expense.business_id == business.id).delete()
+        db.query(UploadSession).filter(UploadSession.business_id == business.id).delete()
+        db.query(Business).filter(Business.id == business.id).delete()
+        db.query(User).filter(User.id == business.owner_id).delete()
+        db.commit()
+        db.close()

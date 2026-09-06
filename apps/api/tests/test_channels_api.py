@@ -1,7 +1,15 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.channels import generate_link_code, redeem_link_code
+import pytest
+
+from app.channels import (
+    CODE_LENGTH,
+    build_history,
+    generate_link_code,
+    looks_like_link_code,
+    redeem_link_code,
+)
 from app.models import Business, ChannelIdentity, ChannelLinkCode, User
 from app.security import hash_password
 
@@ -46,6 +54,62 @@ def test_generate_link_code_returns_code_and_expiry(client, db_session):
     stored = db_session.query(ChannelLinkCode).filter(ChannelLinkCode.code == body["code"]).one()
     assert stored.business_id == uuid.UUID(business["id"])
     assert stored.consumed_at is None
+
+
+# v0.6 [2026-08-27]: pure classifier, no DB -- decides which pre-linking
+# reply an unlinked number gets. The regression these guard is a real one
+# found in live testing: "Hello" (5 spaceless chars) was classified as a
+# link-code attempt, so the first message a new owner ever sends was
+# answered with "that code isn't valid or has expired". See
+# docs/decisions.md [2026-08-27].
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hello",  # the exact message that exposed this
+        "hi",
+        "hey",
+        "start",
+        "Menu",
+        "how did I do this week?",  # has spaces -- never was misclassified
+        "",
+        "   ",
+        "ABCDE",  # right alphabet, one char too short
+        "ABCDEFG",  # right alphabet, one char too long
+        "ABC0EF",  # 0 is excluded from the alphabet (reads as O)
+        "ABC1EF",  # 1 is excluded (reads as I/L)
+        "ABCOEF",  # O is excluded
+        "ABCIEF",  # I is excluded
+        "ABCLEF",  # L is excluded
+        "ABC-EF",  # punctuation is not in the alphabet
+        "234567890123",  # 12 digits: passed the old len<=12 heuristic
+    ],
+)
+def test_looks_like_link_code_rejects_non_codes(text):
+    assert looks_like_link_code(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ABC23F",
+        "abc23f",  # phone keyboards do not shift-type
+        "  ABC23F  ",  # copy-paste picks up whitespace
+        "AbC23f",
+    ],
+)
+def test_looks_like_link_code_accepts_real_code_shapes(text):
+    assert looks_like_link_code(text) is True
+
+
+def test_generated_codes_are_always_classified_as_codes(db_session):
+    """Ties the classifier to the generator: whatever generate_link_code
+    produces must be recognized, so the two can never drift apart."""
+    user, business = _create_user_and_business(db_session, "Classifier Co")
+    for _ in range(50):
+        code = generate_link_code(db_session, user.id, business.id).code
+        assert len(code) == CODE_LENGTH
+        assert looks_like_link_code(code) is True
+        assert looks_like_link_code(code.lower()) is True
 
 
 def test_redeem_link_code_creates_identity(db_session):
@@ -233,3 +297,80 @@ def test_update_channel_frequency_not_found_for_other_business(client, db_sessio
         headers=auth_header(token_b),
     )
     assert response.status_code == 404
+
+
+# --- [2026-08-27] build_history: don't replay data-entry narration ---
+#
+# Measured against a real 20-message WhatsApp conversation, the model called
+# propose_*_entry for a new expense 11/12 times with NO history and 12/12
+# with the last 4 messages -- but only 1-3/12 with the full history. The
+# failure scales with accumulated precedent, so it is worst for established
+# daily users and invisible for new ones. Replacing data-entry narration
+# with a factual marker took that same history from 1/12 to 11/12.
+# See docs/decisions.md [2026-08-27].
+
+
+class _Msg:
+    """Stand-in for a Message row -- build_history only reads these three."""
+
+    def __init__(self, role, content, tool_calls=None):
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+def test_build_history_rewrites_data_entry_turns():
+    history = build_history(
+        [
+            _Msg("user", "sold 3 bags of rice at 50 each"),
+            _Msg(
+                "assistant",
+                "I've staged the sale entry for your review. Please confirm.",
+                [{"tool": "propose_sale_entry", "arguments": {}}],
+            ),
+            _Msg("user", "Yes"),
+            _Msg(
+                "assistant",
+                "The sale of 3 bags of rice has been successfully recorded.",
+                [{"tool": "confirm_pending_entry", "arguments": {}}],
+            ),
+        ]
+    )
+
+    assert [m["role"] for m in history] == ["user", "assistant", "user", "assistant"]
+    # User turns are never rewritten -- they are what the owner actually said.
+    assert history[0]["content"] == "sold 3 bags of rice at 50 each"
+    assert history[2]["content"] == "Yes"
+    # The narration the model was copying is gone...
+    assert "staged the sale entry" not in history[1]["content"]
+    assert "successfully recorded" not in history[3]["content"]
+    # ...but what happened is still legible to the model.
+    assert "propose_sale_entry" in history[1]["content"]
+    assert "confirm_pending_entry" in history[3]["content"]
+
+
+def test_build_history_leaves_analytical_answers_verbatim():
+    """Only data-entry turns invite imitation; rewriting ordinary answers
+    would throw away context the model needs (and multi-turn slot filling
+    depends on)."""
+    answer = "Your total sales amount to 115.0 GHS across 3 orders."
+    history = build_history(
+        [
+            _Msg("user", "what were my total sales?"),
+            _Msg("assistant", answer, [{"tool": "get_financial_summary", "arguments": {}}]),
+        ]
+    )
+
+    assert history[1]["content"] == answer
+
+
+def test_build_history_handles_turns_without_tool_calls():
+    history = build_history(
+        [
+            _Msg("assistant", "Could you tell me the quantity and price?", None),
+            _Msg("assistant", "No sales recorded today.", []),
+        ]
+    )
+
+    assert history[0]["content"] == "Could you tell me the quantity and price?"
+    assert history[1]["content"] == "No sales recorded today."

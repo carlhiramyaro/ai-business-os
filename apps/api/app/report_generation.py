@@ -131,6 +131,10 @@ def _populate_report_body(db: Session, business: Business, report: Report) -> No
 
     final_state = report_graph.invoke(
         {
+            # Narration context, not a metric -- every agent's prompt needs
+            # it or the model writes "$" for a GHS business. See
+            # app/agents.py's currency_clause.
+            "currency": getattr(business, "currency", None),
             "finance_metrics": finance_metrics,
             "inventory_metrics": inventory_metrics,
             "marketing_metrics": marketing_metrics,

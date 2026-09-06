@@ -13,15 +13,22 @@ from app.auth_maintenance import delete_expired_refresh_tokens
 from app.celery_app import celery_app
 from app.channels import (
     MAX_HISTORY_MESSAGES,
+    build_history,
     format_for_channel,
     get_or_create_channel_conversation,
+    looks_like_link_code,
     redeem_link_code,
     resolve_identity,
 )
 from app.chat_generation import generate_chat_answer
 from app.column_mapping import resolve_column_mapping
+from app.data_entry import pending_entry_footer
 from app.database import SessionLocal
-from app.document_extraction import format_extraction_summary, run_document_extraction
+from app.document_extraction import (
+    document_review_footer,
+    format_extraction_summary,
+    run_document_extraction,
+)
 from app.ingestion import RECORD_FIELD_MAP, ingest_rows
 from app.insight_delivery import collect_and_queue_digests
 from app.insights_generation import run_business_analysis
@@ -336,7 +343,22 @@ def _send_reply(db: Session, business: Business, identity: ChannelIdentity, text
     rather than re-queued: this function already runs inside a background
     task, so a second queue hop would only add latency for a reply the
     owner is actively waiting on. Insight pushes queue instead, because
-    they have no one waiting synchronously. See docs/decisions.md."""
+    they have no one waiting synchronously. See docs/decisions.md.
+
+    Appends the pending-entry footer (app/data_entry.py) when something is
+    staged, so the owner always sees what a "yes" would actually record --
+    the model's own prose about it is not trustworthy (see
+    pending_entry_footer). Appended here, at send time, rather than being
+    stored on the Message row, so it never re-enters the history the model
+    imitates."""
+    # Both kinds of "awaiting your yes" state get a footer. They are
+    # mutually exclusive in practice (a photo and a typed entry are not
+    # normally in flight at once) but both are appended if both exist,
+    # rather than picking one and leaving the other invisible.
+    for footer in (pending_entry_footer(db, business.id), document_review_footer(db, business.id)):
+        if footer:
+            text = f"{text}\n\n{footer}"
+
     for part in format_for_channel(text, "whatsapp"):
         message = OutboundMessage(
             business_id=business.id,
@@ -359,13 +381,11 @@ def _handle_unlinked_message(db: Session, from_wa_id: str, text: str, contact_na
     hasn't been linked." Sends the pre-linking replies directly via
     send_text (not the OutboundMessage queue -- there's no business to
     scope an audit row to, by definition, before linking succeeds)."""
-    candidate = text.strip()
-    looks_like_code = candidate and " " not in candidate and len(candidate) <= 12
-    if not looks_like_code:
+    if not looks_like_link_code(text):
         send_text(from_wa_id, _LINK_INSTRUCTIONS)
         return
 
-    identity = redeem_link_code(db, candidate, "whatsapp", from_wa_id, display_name=contact_name)
+    identity = redeem_link_code(db, text.strip(), "whatsapp", from_wa_id, display_name=contact_name)
     if identity is None:
         send_text(from_wa_id, _LINK_INVALID)
         return
@@ -411,13 +431,12 @@ def handle_whatsapp_message_task(message_id: str, from_wa_id: str, text: str, co
         db.add(Message(conversation_id=conversation.id, role="user", content=text))
         db.flush()
 
-        history = [
-            {"role": m.role, "content": m.content}
-            for m in db.query(Message)
+        history = build_history(
+            db.query(Message)
             .filter(Message.conversation_id == conversation.id)
             .order_by(Message.created_at)
             .all()[:-1]  # exclude the message just added -- passed separately below
-        ][-MAX_HISTORY_MESSAGES:]
+        )[-MAX_HISTORY_MESSAGES:]
 
         with propagate_attributes(
             session_id=str(conversation.id), metadata={"business_id": str(business.id), "channel": "whatsapp"}

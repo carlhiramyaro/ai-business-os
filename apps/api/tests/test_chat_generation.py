@@ -8,8 +8,11 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 import app.chat_generation as chat_generation_module
 from app.chat_generation import MAX_TOOL_ROUNDS, generate_chat_answer
+from app.data_entry import propose_sale_entry
 from app.models import Business, Sale, UploadSession, User
 from app.security import hash_password
 
@@ -185,6 +188,152 @@ def test_remember_business_fact_empty_fact_is_fed_back_not_raised(monkeypatch, d
     assert result.answer == "Understood."
     tool_messages = [m for m in completions.calls[1]["messages"] if isinstance(m, dict) and m.get("role") == "tool"]
     assert "error" in json.loads(tool_messages[0]["content"])
+
+
+# --- [2026-08-27] guard: never claim a write that didn't happen ---
+#
+# The model intermittently narrates a staged entry without calling
+# propose_*_entry (20/20 correct when nothing is pending, 14/20 when an
+# entry already is; neither a stronger prompt nor gpt-4o moved it). The
+# guard doesn't try to make the model behave -- it makes the failure honest:
+# an owner asked to resend has lost nothing, an owner falsely told
+# "recorded" has lost a sale from their books. See docs/decisions.md.
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "I've staged the sale entry for your review. Please confirm.",
+        "I've proposed the following entry for your sale: 2 crates of coke.",
+        "I'm proposing a new entry for your sale of 2 crates of coke.",
+        "The sale of 3 bags of rice has been successfully recorded.",
+        "I have recorded the sale for you.",
+        # Intent forms read identically to the owner and invite a "yes" that
+        # would confirm whatever was already pending. Caught leaking 3/20
+        # in live measurement before these were covered.
+        "I'll propose the following entry for the new sale: 2 crates of Coke. Please confirm.",
+        "I will record this sale for you.",
+        "Let me propose the entry: 2 crates of coke at 100.",
+        "I'm going to stage this entry for your confirmation.",
+    ],
+)
+def test_staging_claim_without_a_write_tool_is_replaced(monkeypatch, db_session, claim):
+    business = _seed_business(db_session)
+    _fake_openai(monkeypatch, [_model_turn(content=claim)])
+
+    result = generate_chat_answer(db_session, business, "sold 2 crates of coke at 100", history=[])
+
+    assert result.answer != claim
+    assert "didn't actually save that" in result.answer
+    assert result.tool_calls == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # The live cold-start reply -- contains "recorded", must NOT trip the
+        # guard, or a correct answer gets replaced by an apology.
+        "There were no recorded sales today.",
+        "Your total sales amount to 115.0 GHS.",
+        "You have no recorded expenses, so profit equals revenue.",
+        "Rice is your top product by revenue.",
+    ],
+)
+def test_ordinary_answers_are_not_touched(monkeypatch, db_session, answer):
+    business = _seed_business(db_session)
+    _fake_openai(monkeypatch, [_model_turn(content=answer)])
+
+    result = generate_chat_answer(db_session, business, "how did I do today?", history=[])
+
+    assert result.answer == answer
+
+
+def test_staging_claim_is_allowed_when_the_write_tool_actually_ran(monkeypatch, db_session):
+    """The guard must not fire on the happy path -- a real propose_*_entry
+    call makes the claim true."""
+    business = _seed_business(db_session)
+    _fake_openai(
+        monkeypatch,
+        [
+            _model_turn(
+                tool_calls=[_tool_call("propose_sale_entry", {"product_name": "Coke", "quantity": 2, "total_amount": 200})]
+            ),
+            _model_turn(content="I've staged the sale entry for your review. Please confirm."),
+        ],
+    )
+
+    result = generate_chat_answer(db_session, business, "sold 2 crates of coke for 200", history=[])
+
+    assert result.answer == "I've staged the sale entry for your review. Please confirm."
+
+
+# --- [2026-08-27] authoritative-state injection ---
+#
+# The model was inferring "is anything staged?" from its OWN replayed prose
+# (history is replayed as plain text; tool_calls are persisted but not
+# replayed). A previous "I've staged the sale entry..." turn read as an
+# example to imitate, so it reproduced the sentence WITHOUT calling
+# propose_*_entry -- the owner was told a sale was staged, then "recorded",
+# with nothing written. Reproducible 0/5 with such history, 5/5 without;
+# 8/8 after the fix. See docs/decisions.md [2026-08-27].
+#
+# These assert the mechanism (the state message reaches the model, and says
+# the right thing) rather than the LLM's behaviour, which is not
+# deterministic and is not the unit under test.
+
+
+def _state_messages(call):
+    """The injected state message is the LAST system message -- it sits
+    after history so it outranks anything earlier in the conversation."""
+    return [m for m in call["messages"] if isinstance(m, dict) and m.get("role") == "system"]
+
+
+def test_current_state_is_injected_after_history_and_before_the_question(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    completions = _fake_openai(monkeypatch, [_model_turn(content="ok")])
+
+    history = [
+        {"role": "user", "content": "sold 3 bags of rice at 50 each"},
+        {"role": "assistant", "content": "I've staged the sale entry for your review. Please confirm."},
+    ]
+    generate_chat_answer(db_session, business, "sold 2 crates of malt for 240", history=history)
+
+    messages = completions.calls[0]["messages"]
+    roles = [m.get("role") for m in messages if isinstance(m, dict)]
+    # system prompt, ...history..., state, question
+    assert roles[0] == "system"
+    assert roles[-1] == "user"
+    assert roles[-2] == "system", "state must be injected immediately before the question"
+    assert messages[-1]["content"] == "sold 2 crates of malt for 240"
+    # ...and it must come after the poisoning history, not before it.
+    assert messages.index(history[-1]) < len(messages) - 2
+
+
+def test_injected_state_says_nothing_is_staged_when_nothing_is(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    completions = _fake_openai(monkeypatch, [_model_turn(content="ok")])
+
+    generate_chat_answer(db_session, business, "sold 2 crates of malt for 240", history=[])
+
+    state = _state_messages(completions.calls[0])[-1]["content"]
+    assert "NO staged entry" in state
+    # The instruction that actually prevents the failure: prose is not staging.
+    assert "propose_" in state
+    assert "NO photographed document" in state
+
+
+def test_injected_state_describes_a_real_pending_entry(monkeypatch, db_session):
+    business = _seed_business(db_session)
+    propose_sale_entry(db_session, business.id, {"product_name": "Malt", "quantity": 2, "total_amount": 240})
+    db_session.flush()
+
+    completions = _fake_openai(monkeypatch, [_model_turn(content="ok")])
+    generate_chat_answer(db_session, business, "yes", history=[])
+
+    state = _state_messages(completions.calls[0])[-1]["content"]
+    assert "IS a staged entry" in state
+    assert "Malt" in state
+    assert "confirm_pending_entry" in state
 
 
 def test_propose_sale_entry_tool_stages_without_recording(monkeypatch, db_session):
