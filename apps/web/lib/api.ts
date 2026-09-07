@@ -96,6 +96,12 @@ export function listBusinesses(accessToken: string) {
   }).then((response) => parseJsonOrThrow<Business[]>(response));
 }
 
+export function getBusiness(accessToken: string, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}`, {
+    headers: authHeaders(accessToken),
+  }).then((response) => parseJsonOrThrow<Business>(response));
+}
+
 export interface UploadCreateResponse {
   uploadSessionId: string;
   status: string;
@@ -229,6 +235,49 @@ export interface ReportSummary {
   businessHealth: string;
 }
 
+// Composed and persisted at generation time by app/report_generation.py --
+// a fixed, internally-controlled shape (unlike Insight.metrics, which
+// grows a new variant per detector added to signals.py), so it's typed
+// directly rather than behind runtime guards.
+export interface ReportFinanceMetrics {
+  totalRevenue: number;
+  totalExpenses: number;
+  profit: number;
+  profitMargin: number | null;
+  expenseBreakdown: Record<string, number>;
+}
+
+export interface ReportInventoryMetrics {
+  lowStockItems: { productName: string; quantity: number; reorderLevel: number }[];
+  totalInventoryValue: number;
+  totalInventoryItems: number;
+}
+
+export interface ReportMarketingMetrics {
+  topProducts: { productName: string; totalRevenue: number }[];
+  paymentMethodBreakdown: Record<string, number>;
+}
+
+export interface ReportOperationsMetrics {
+  totalOrders: number;
+  averageDiscount: number;
+  dateRangeStart: string | null;
+  dateRangeEnd: string | null;
+}
+
+export interface ReportDailyRevenuePoint {
+  date: string;
+  revenue: number;
+}
+
+export interface ReportMetrics {
+  finance: ReportFinanceMetrics;
+  inventory: ReportInventoryMetrics;
+  marketing: ReportMarketingMetrics;
+  operations: ReportOperationsMetrics;
+  dailyRevenue: ReportDailyRevenuePoint[];
+}
+
 export interface ReportDetail {
   periodStart: string;
   periodEnd: string;
@@ -238,6 +287,8 @@ export interface ReportDetail {
   opportunities: string[];
   forecast: string | null;
   actionPlan: string[];
+  // null for reports generated before this field existed -- no backfill.
+  metrics: ReportMetrics | null;
 }
 
 export interface ReportGenerateResponse {
@@ -441,12 +492,45 @@ export function confirmDocument(accessToken: string, businessId: string, session
 
 export type InsightSeverity = "info" | "warning" | "critical";
 
+// Shapes match app/signals.py's metrics dicts exactly -- see each
+// detect_*'s docstring there. Used by the isXMetrics runtime guards in
+// components/charts/InsightVisual.tsx to narrow Insight.metrics safely.
+export interface RevenueTrendMetrics {
+  recentWeekRevenue: number;
+  priorWeekRevenue: number;
+  pctChange: number;
+}
+
+export interface ExpenseSpikeMetrics {
+  category: string;
+  recentAmount: number;
+  baselineAmount: number;
+  pctChange: number;
+}
+
+export interface StockDepletionMetrics {
+  productName: string;
+  quantity: number;
+  dailyVelocity: number;
+  daysToStockout: number | null;
+}
+
+export interface InactiveCustomersMetrics {
+  inactiveSinceDays: number;
+  count: number;
+  customers: unknown[];
+}
+
 export interface Insight {
   id: string;
   insightType: string;
   severity: InsightSeverity;
   title: string;
   body: string;
+  // Not validated by Pydantic beyond dict[str, Any] on the backend
+  // (schemas/insights.py) -- narrow this with the isXMetrics guards in
+  // components/charts/InsightVisual.tsx before trusting a shape, rather
+  // than a compile-time-only discriminated union.
   metrics: Record<string, unknown>;
   isRead: boolean;
   periodStart: string | null;

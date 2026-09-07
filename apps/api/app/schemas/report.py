@@ -22,6 +22,9 @@ class ReportDetail(CamelModel):
     opportunities: list[str]
     forecast: str | None
     action_plan: list[str]
+    # None for reports generated before this field existed (no backfill) --
+    # see docs/decisions.md [2026-09-07].
+    metrics: dict | None = None
 
 
 class ReportGenerateRequest(CamelModel):

@@ -120,10 +120,9 @@ def _populate_report_body(db: Session, business: Business, report: Report) -> No
         report.period_start,
         report.period_end,
     )
+    revenue_points = daily_revenue_points([{"saleDate": s.sale_date, "totalAmount": s.total_amount} for s in sales])
     forecast_metrics = {
-        "revenue": forecast_revenue(
-            daily_revenue_points([{"saleDate": s.sale_date, "totalAmount": s.total_amount} for s in sales])
-        ),
+        "revenue": forecast_revenue(revenue_points),
         "stockDepletion": forecast_stock_depletion(
             [{"productName": i.product_name, "quantity": i.quantity} for i in inventory_rows], velocity
         ),
@@ -168,6 +167,17 @@ def _populate_report_body(db: Session, business: Business, report: Report) -> No
 
     report.executive_summary = manager_result["summary"]
     report.forecast = manager_result["forecast"]
+    # Persisted alongside the narration it fed, not recomputed at read time
+    # -- see docs/decisions.md [2026-09-07]. daily_revenue_points' "date"
+    # keys are date objects; JSONB needs them as ISO strings.
+    report.metrics = {
+        "finance": finance_metrics,
+        "inventory": inventory_metrics,
+        "marketing": marketing_metrics,
+        "operations": operations_metrics,
+        "forecast": forecast_metrics,
+        "dailyRevenue": [{"date": p["date"].isoformat(), "revenue": p["revenue"]} for p in revenue_points],
+    }
 
     for section_type, items in (
         ("risk", manager_result.get("risks", [])),

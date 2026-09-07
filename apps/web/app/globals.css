@@ -15,6 +15,19 @@
   --warning-fg: #92400e;
   --danger-bg: #fee2e2;
   --danger-fg: #991b1b;
+  /* 4-step ordinal teal ramp, validated against #ffffff with the dataviz
+     skill's validate_palette.js --ordinal (monotone L, adjacent deltaL >=
+     0.06, light-end contrast 2.49:1). --chart-3 intentionally equals
+     --brand -- same hue family, one ramp. Do not add a lighter 5th step:
+     #2dd4bf fails the 2:1 light-end contrast floor. */
+  --chart-1: #14b8a6;
+  --chart-2: #0d9488;
+  --chart-3: #0f766e;
+  --chart-4: #115e59;
+  --chart-track: #e7e5e4;
+  /* Neutral "Other" bucket in BarChart -- deliberately outside the teal
+     ramp so a folded tail never reads as a 5th ranked step. */
+  --chart-other: #a8a29e;
 }
 
 @theme inline {
@@ -32,6 +45,12 @@
   --color-warning-fg: var(--warning-fg);
   --color-danger-bg: var(--danger-bg);
   --color-danger-fg: var(--danger-fg);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-track: var(--chart-track);
+  --color-chart-other: var(--chart-other);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

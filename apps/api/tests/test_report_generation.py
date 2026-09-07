@@ -199,6 +199,28 @@ def test_generate_report_is_cumulative_across_upload_sessions_within_period(monk
     assert first_upload_session.id != second_upload_session.id
 
 
+def test_generate_report_persists_metrics(monkeypatch, db_session):
+    """reports.metrics (docs/decisions.md [2026-09-07]) must round-trip the
+    same figures the analysts were narrated from -- a chart reading this
+    column must never disagree with the report's own prose."""
+    monkeypatch.setattr("app.agents._call_llm", fake_call_llm)
+    monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
+    business, upload_session = _seed_business_with_data(db_session)
+
+    report = generate_report(
+        db_session, business, period_start=PERIOD_START, period_end=PERIOD_END, upload_session_id=upload_session.id
+    )
+
+    assert report.metrics is not None
+    assert report.metrics["finance"]["totalRevenue"] == 100.0
+    assert report.metrics["finance"]["totalExpenses"] == 50.0
+    assert report.metrics["inventory"]["totalInventoryItems"] == 1
+    assert report.metrics["marketing"]["topProducts"] == [{"productName": "Rice", "totalRevenue": 100.0}]
+    assert report.metrics["dailyRevenue"] == [{"date": PERIOD_START.isoformat(), "revenue": 100.0}]
+    assert "revenue" in report.metrics["forecast"]
+    assert "stockDepletion" in report.metrics["forecast"]
+
+
 # --- [2026-09-04] every report agent must name the business's currency ---
 #
 # The four analysts and the manager all built prompts without it, so a GHS

@@ -104,6 +104,7 @@ def get_report(report: Report = Depends(get_owned_report), db: Session = Depends
         opportunities=grouped["opportunity"],
         forecast=report.forecast,
         action_plan=grouped["action_item"],
+        metrics=report.metrics,
     )
 
 

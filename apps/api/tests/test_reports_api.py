@@ -83,6 +83,9 @@ def test_get_report_groups_sections_by_type(monkeypatch, client, db_session):
     assert body["risks"] == ["Risk one", "Risk two", "Risk three"]
     assert body["opportunities"] == ["Opportunity one"]
     assert body["actionPlan"] == ["Action one"]
+    assert body["metrics"] is not None
+    assert "finance" in body["metrics"]
+    assert "dailyRevenue" in body["metrics"]
 
 
 def test_get_report_forbidden_for_non_owner(monkeypatch, client, db_session):

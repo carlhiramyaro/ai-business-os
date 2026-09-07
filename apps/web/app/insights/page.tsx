@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   Insight,
   InsightSeverity,
+  getBusiness,
   getUnreadInsightCount,
   listInsights,
   markInsightRead,
@@ -15,6 +16,7 @@ import { BusinessPicker } from "@/components/BusinessPicker";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { InsightVisual } from "@/components/charts/InsightVisual";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLLS = 10;
@@ -33,6 +35,7 @@ export default function InsightsPage() {
   const [insights, setInsights] = useState<Insight[] | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [running, setRunning] = useState(false);
+  const [currency, setCurrency] = useState("GHS");
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollCountRef = useRef(0);
@@ -68,7 +71,8 @@ export default function InsightsPage() {
     setInsights(null);
     setRunning(false);
     try {
-      await refresh(id);
+      const [business] = await Promise.all([getBusiness(accessToken, id), refresh(id)]);
+      setCurrency(business.currency ?? "GHS");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load insights");
     }
@@ -182,6 +186,7 @@ export default function InsightsPage() {
                 </Badge>
               </div>
               <p className="text-sm text-muted">{insight.body}</p>
+              <InsightVisual insight={insight} currency={currency} />
               <span className="text-xs text-muted">{new Date(insight.createdAt).toLocaleString()}</span>
             </Card>
           ))}

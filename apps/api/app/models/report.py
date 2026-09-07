@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -19,6 +19,11 @@ class Report(Base):
     status = Column(String, nullable=False, default="PENDING")
     executive_summary = Column(Text, nullable=True)
     forecast = Column(Text, nullable=True)
+    # The deterministic finance/inventory/marketing/operations/forecast
+    # figures computed for this report -- persisted at generation time
+    # (app/report_generation.py) so charts never disagree with the prose.
+    # Nullable, no backfill: reports predating this column render text-only.
+    metrics = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

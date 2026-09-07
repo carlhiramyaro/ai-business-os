@@ -8,6 +8,7 @@ import {
   ReportSummary,
   deleteReport,
   generateReport,
+  getBusiness,
   getReport,
   listReports,
 } from "@/lib/api";
@@ -16,6 +17,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { ReportCharts } from "@/components/charts/ReportCharts";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -42,6 +44,7 @@ export default function ReportsPage() {
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
   const [generatingReportId, setGeneratingReportId] = useState<string | null>(null);
+  const [currency, setCurrency] = useState("GHS");
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -87,7 +90,9 @@ export default function ReportsPage() {
     setSelectedReportId(null);
     setGeneratingReportId(null);
     try {
-      setReports(await listReports(accessToken, id));
+      const [business, reportList] = await Promise.all([getBusiness(accessToken, id), listReports(accessToken, id)]);
+      setCurrency(business.currency ?? "GHS");
+      setReports(reportList);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load reports");
     }
@@ -255,6 +260,7 @@ export default function ReportsPage() {
           </button>
 
           <Section title="Summary" text={selectedReport.summary} />
+          {selectedReport.metrics && <ReportCharts metrics={selectedReport.metrics} currency={currency} />}
           <ListSection title="Risks" items={selectedReport.risks} />
           <ListSection title="Opportunities" items={selectedReport.opportunities} />
           <ListSection title="Action Plan" items={selectedReport.actionPlan} />
