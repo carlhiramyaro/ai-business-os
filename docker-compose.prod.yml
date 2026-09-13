@@ -126,6 +126,13 @@ services:
   web:
     image: ${ECR_REGISTRY}/ai-business-os/web:${IMAGE_TAG}
     restart: unless-stopped
+    # Needs its own CLERK_SECRET_KEY at runtime (server-side auth()/
+    # clerkMiddleware()), distinct from NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+    # which is baked in at build time instead (see apps/web/Dockerfile).
+    # Missing until docs/decisions.md's Clerk-migration-deploy entry --
+    # this was the only service here without app.env, which every other
+    # service already gets its config from.
+    env_file: app.env
     mem_limit: 512m
     logging: *default-logging
 
