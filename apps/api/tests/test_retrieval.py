@@ -2,7 +2,6 @@ import uuid
 
 import app.retrieval as retrieval_module
 from app.models import Business, Embedding, User
-from app.security import hash_password
 
 
 def make_vector(active_index: int, dim: int = 1536) -> list[float]:
@@ -12,7 +11,7 @@ def make_vector(active_index: int, dim: int = 1536) -> list[float]:
 
 
 def _seed_business(db_session):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Retrieval Test Co")

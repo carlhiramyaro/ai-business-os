@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { createConversation, sendChatMessage, type ChatToolCall } from "@/lib/api";
@@ -32,7 +31,7 @@ function describeToolCalls(toolCalls: ChatToolCall[]): string {
 }
 
 export default function ChatPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -51,14 +50,13 @@ export default function ChatPage() {
   }, [messages, sending]);
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     setError(null);
     setBusinessId(id);
     setConversationId(null);
     setMessages([]);
     setStartingConversation(true);
     try {
-      const conversation = await createConversation(accessToken, id);
+      const conversation = await createConversation(getToken, id);
       setConversationId(conversation.conversationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start conversation");
@@ -69,7 +67,7 @@ export default function ChatPage() {
 
   async function handleSend(event: React.FormEvent) {
     event.preventDefault();
-    if (!accessToken || !businessId || !conversationId || !draft.trim()) return;
+    if (!businessId || !conversationId || !draft.trim()) return;
     setError(null);
     setSending(true);
 
@@ -78,7 +76,7 @@ export default function ChatPage() {
     setDraft("");
 
     try {
-      const response = await sendChatMessage(accessToken, businessId, conversationId, question);
+      const response = await sendChatMessage(getToken, businessId, conversationId, question);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: response.answer, toolCalls: response.toolCalls },
@@ -92,20 +90,6 @@ export default function ChatPage() {
 
   if (loading) return null;
 
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to chat with your data.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto flex w-full max-w-2xl min-h-0 flex-1 flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
       <div>
@@ -116,7 +100,7 @@ export default function ChatPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {startingConversation && <p className="text-sm text-muted">Starting conversation…</p>}

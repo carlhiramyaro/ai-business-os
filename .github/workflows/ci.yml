@@ -56,7 +56,6 @@ jobs:
       # test hitting a live external API by accident, which is exactly what
       # agent-instructions.md's "only mock the LLM call" rule guards
       # against missing.
-      JWT_SECRET_KEY: ci-test-secret-do-not-use-in-prod
       S3_BUCKET_NAME: ci-unused-bucket
       AWS_REGION: us-east-1
       OPENAI_API_KEY: sk-ci-unused
@@ -131,11 +130,13 @@ jobs:
         working-directory: apps/web
         run: npm run lint
 
-      # NEXT_PUBLIC_API_URL is inlined at build time (see apps/web/Dockerfile's
-      # docstring) -- a placeholder is enough to prove the build succeeds;
-      # the real value is supplied per-environment by the deploy workflow.
+      # NEXT_PUBLIC_API_URL/NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are inlined at
+      # build time (see apps/web/Dockerfile's docstring) -- placeholders are
+      # enough to prove the build succeeds; the real values are supplied
+      # per-environment by the deploy workflow.
       - name: Build
         working-directory: apps/web
         env:
           NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ci-unused
         run: npm run build

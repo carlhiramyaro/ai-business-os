@@ -11,7 +11,6 @@ from app.document_extraction import (
     format_extraction_summary,
 )
 from app.models import Business, DocumentExtraction, Expense, UploadSession, User
-from app.security import hash_password
 
 
 def test_parse_extraction_keeps_only_canonical_fields():
@@ -94,7 +93,7 @@ def test_format_extraction_summary_omits_empty_field_values():
 
 
 def _seed_business(db):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("pw"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db.add(user)
     db.flush()
     business = Business(owner_id=user.id, business_name="Document Review Co")

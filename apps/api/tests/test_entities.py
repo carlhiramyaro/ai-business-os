@@ -9,11 +9,11 @@ from app.entities import (
 )
 from app.ingestion import ingest_rows
 from app.models import Business, Customer, Supplier, UploadSession, User
-from app.security import hash_password
+from tests.auth_helpers import auth_header, register_and_login
 
 
 def _seed_business(db_session):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Entities Test Co")
@@ -140,21 +140,8 @@ def test_resolution_is_scoped_per_business(db_session):
     assert db_session.query(Supplier).count() == 2
 
 
-def register_and_login(client, email):
-    client.post(
-        "/api/v1/auth/register",
-        json={"fullName": "Test User", "email": email, "password": "password123"},
-    )
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
 def test_list_customers_and_suppliers_endpoints(client, db_session):
-    token = register_and_login(client, "entities1@example.com")
+    token = register_and_login("entities1@example.com")
     business_id = client.post(
         "/api/v1/businesses/", json={"businessName": "Entities API Co"}, headers=auth_header(token)
     ).json()["id"]
@@ -175,12 +162,12 @@ def test_list_customers_and_suppliers_endpoints(client, db_session):
 
 
 def test_entities_endpoints_forbidden_for_non_owner(client, db_session):
-    token = register_and_login(client, "entities2@example.com")
+    token = register_and_login("entities2@example.com")
     business_id = client.post(
         "/api/v1/businesses/", json={"businessName": "Entities Private Co"}, headers=auth_header(token)
     ).json()["id"]
 
-    intruder_token = register_and_login(client, "entities_intruder@example.com")
+    intruder_token = register_and_login("entities_intruder@example.com")
     response = client.get(f"/api/v1/businesses/{business_id}/customers", headers=auth_header(intruder_token))
     assert response.status_code == 403
     response = client.get(f"/api/v1/businesses/{business_id}/suppliers", headers=auth_header(intruder_token))

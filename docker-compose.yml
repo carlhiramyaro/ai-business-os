@@ -122,6 +122,11 @@ services:
       target: dev
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Unlike NEXT_PUBLIC_API_URL above, this is a real per-developer
+      # credential (Clerk dashboard's API Keys page, test instance) -- set
+      # it in the root .env (gitignored, Compose-only substitution values,
+      # see that file's docstring), not hardcoded here.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
     ports:
       - "3000:3000"
     volumes:

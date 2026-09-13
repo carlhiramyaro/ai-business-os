@@ -10,29 +10,28 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
 export default function MemoryPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [facts, setFacts] = useState<BusinessFact[] | null>(null);
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     setError(null);
     setBusinessId(id);
     setFacts(null);
     try {
-      setFacts(await listBusinessFacts(accessToken, id));
+      setFacts(await listBusinessFacts(getToken, id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load memory");
     }
   }
 
   async function handleDelete(factId: string) {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     try {
-      await deleteBusinessFact(accessToken, businessId, factId);
+      await deleteBusinessFact(getToken, businessId, factId);
       setFacts((prev) => prev?.filter((fact) => fact.id !== factId) ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete fact");
@@ -40,20 +39,6 @@ export default function MemoryPage() {
   }
 
   if (loading) return null;
-
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to view memory.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
@@ -68,7 +53,7 @@ export default function MemoryPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {facts && (

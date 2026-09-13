@@ -22,7 +22,7 @@ from fastapi import HTTPException, Request, status
 from limits.storage import storage_from_string
 from limits.strategies import MovingWindowRateLimiter
 
-from app.security import decode_access_token
+from app.clerk_auth import decode_clerk_token
 
 logger = structlog.get_logger(__name__)
 
@@ -97,7 +97,7 @@ def rate_limit_key(request: Request) -> str:
     if auth_header.lower().startswith("bearer "):
         token = auth_header[len("bearer ") :]
         try:
-            payload = decode_access_token(token)
+            payload = decode_clerk_token(token)
         except jwt.PyJWTError:
             payload = None
         if payload is not None:

@@ -33,7 +33,7 @@ const STATUS_TONE: Record<"PENDING" | "FAILED", "warning" | "danger"> = {
 };
 
 export default function ReportsPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -62,13 +62,12 @@ export default function ReportsPage() {
   }
 
   async function refreshGeneratingReport(reportId: string, currentBusinessId: string) {
-    if (!accessToken) return;
     try {
-      const latest = await getReport(accessToken, currentBusinessId, reportId);
+      const latest = await getReport(getToken, currentBusinessId, reportId);
       if (latest.status !== "PENDING") {
         stopPolling();
         setGeneratingReportId(null);
-        setReports(await listReports(accessToken, currentBusinessId));
+        setReports(await listReports(getToken, currentBusinessId));
       }
     } catch (err) {
       stopPolling();
@@ -82,7 +81,6 @@ export default function ReportsPage() {
   }
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     stopPolling();
     setError(null);
     setBusinessId(id);
@@ -90,7 +88,7 @@ export default function ReportsPage() {
     setSelectedReportId(null);
     setGeneratingReportId(null);
     try {
-      const [business, reportList] = await Promise.all([getBusiness(accessToken, id), listReports(accessToken, id)]);
+      const [business, reportList] = await Promise.all([getBusiness(getToken, id), listReports(getToken, id)]);
       setCurrency(business.currency ?? "GHS");
       setReports(reportList);
     } catch (err) {
@@ -100,10 +98,10 @@ export default function ReportsPage() {
 
   async function handleGenerateReport(event: React.FormEvent) {
     event.preventDefault();
-    if (!accessToken || !businessId || !periodStart || !periodEnd) return;
+    if (!businessId || !periodStart || !periodEnd) return;
     setError(null);
     try {
-      const created = await generateReport(accessToken, businessId, periodStart, periodEnd);
+      const created = await generateReport(getToken, businessId, periodStart, periodEnd);
       setGeneratingReportId(created.reportId);
       startPolling(created.reportId, businessId);
     } catch (err) {
@@ -112,10 +110,10 @@ export default function ReportsPage() {
   }
 
   async function handleOpenReport(reportId: string) {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     try {
-      setSelectedReport(await getReport(accessToken, businessId, reportId));
+      setSelectedReport(await getReport(getToken, businessId, reportId));
       setSelectedReportId(reportId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load report");
@@ -123,10 +121,10 @@ export default function ReportsPage() {
   }
 
   async function handleDeleteReport(reportId: string) {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     try {
-      await deleteReport(accessToken, businessId, reportId);
+      await deleteReport(getToken, businessId, reportId);
       setReports((prev) => prev?.filter((report) => report.id !== reportId) ?? null);
       if (selectedReportId === reportId) {
         setSelectedReport(null);
@@ -138,20 +136,6 @@ export default function ReportsPage() {
   }
 
   if (loading) return null;
-
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to view reports.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
@@ -165,7 +149,7 @@ export default function ReportsPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {businessId && !selectedReport && (

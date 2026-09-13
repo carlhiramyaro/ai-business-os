@@ -14,11 +14,10 @@ import app.chat_generation as chat_generation_module
 from app.chat_generation import MAX_TOOL_ROUNDS, generate_chat_answer
 from app.data_entry import propose_sale_entry
 from app.models import Business, Sale, UploadSession, User
-from app.security import hash_password
 
 
 def _seed_business(db_session):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Agent Loop Test Co", currency="GHS")

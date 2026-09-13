@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
@@ -44,16 +45,18 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex h-full flex-col">
-        <AuthProvider>
-          <NavBar />
-          {/* min-h-0: without it, a flex child can never shrink below its
-              content size, so a page that wants to fill the remaining
-              viewport height and scroll internally (chat, Commit 6)
-              couldn't. Pages that don't opt into that just grow past this
-              box as before -- the document scrolls normally. See
-              docs/decisions.md [mobile-first polish]. */}
-          <main className="flex min-h-0 flex-1 flex-col">{children}</main>
-        </AuthProvider>
+        <ClerkProvider>
+          <AuthProvider>
+            <NavBar />
+            {/* min-h-0: without it, a flex child can never shrink below its
+                content size, so a page that wants to fill the remaining
+                viewport height and scroll internally (chat, Commit 6)
+                couldn't. Pages that don't opt into that just grow past this
+                box as before -- the document scrolls normally. See
+                docs/decisions.md [mobile-first polish]. */}
+            <main className="flex min-h-0 flex-1 flex-col">{children}</main>
+          </AuthProvider>
+        </ClerkProvider>
       </body>
     </html>
   );

@@ -11,13 +11,12 @@ from datetime import datetime, timedelta, timezone
 import app.outbound as outbound
 from app.models import Business, ChannelIdentity, OutboundMessage, User
 from app.outbound import apply_status_update, deliver_outbound_message, queue_message, within_session_window
-from app.security import hash_password
 
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def _create_user_business_identity(db, notification_frequency="off"):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("pw"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db.add(user)
     db.flush()
     business = Business(owner_id=user.id, business_name="Outbound Co")

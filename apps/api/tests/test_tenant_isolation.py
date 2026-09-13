@@ -26,10 +26,9 @@ _UNSCOPED_ALLOWLIST = {
     ("GET", "/"),
     ("GET", "/health/db"),
     ("GET", "/health/worker"),
-    ("POST", "/api/v1/auth/register"),
-    ("POST", "/api/v1/auth/login"),
-    ("POST", "/api/v1/auth/refresh"),
-    ("POST", "/api/v1/auth/logout"),
+    # Clerk owns register/login/refresh/logout now (docs/decisions.md's
+    # Clerk-migration entry) -- /me is the only auth route left, and it's
+    # pre-business by definition same as those used to be.
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/businesses/"),
     ("GET", "/api/v1/businesses/"),
@@ -89,7 +88,9 @@ def test_route_inventory_is_non_empty():
     _IncludedRouter shape again) -- without this, every test below would
     vacuously "pass" by having nothing to check."""
     assert len(_BUSINESS_SCOPED_ROUTES) >= 34
-    assert len(_UNSCOPED_ROUTES) >= 11
+    # 11 -> 8 with the Clerk migration: /register, /login, /refresh, and
+    # /logout are gone, leaving only /me. See docs/decisions.md.
+    assert len(_UNSCOPED_ROUTES) >= 8
 
 
 def _route_id(route):

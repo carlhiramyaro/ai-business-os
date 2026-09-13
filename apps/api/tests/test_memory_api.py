@@ -1,21 +1,12 @@
 import uuid
 
 from app.models import Business, BusinessFact, Embedding
-
-
-def register_and_login(client, email):
-    client.post("/api/v1/auth/register", json={"fullName": "Test User", "email": email, "password": "password123"})
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
+from tests.auth_helpers import auth_header, register_and_login
 
 
 def test_memory_list_and_delete(monkeypatch, client, db_session):
     monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
-    token = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    token = register_and_login(f"{uuid.uuid4()}@example.com")
     created = client.post(
         "/api/v1/businesses/", json={"businessName": "Memory Co"}, headers=auth_header(token)
     ).json()
@@ -47,8 +38,8 @@ def test_memory_list_and_delete(monkeypatch, client, db_session):
 
 
 def test_memory_scoped_to_owning_business(client, db_session):
-    token_a = register_and_login(client, f"{uuid.uuid4()}@example.com")
-    token_b = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    token_a = register_and_login(f"{uuid.uuid4()}@example.com")
+    token_b = register_and_login(f"{uuid.uuid4()}@example.com")
     business_a = client.post(
         "/api/v1/businesses/", json={"businessName": "Business A"}, headers=auth_header(token_a)
     ).json()

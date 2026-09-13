@@ -26,8 +26,8 @@ from app.models import (
     UploadSession,
     User,
 )
-from app.security import create_access_token, hash_password
 from main import app
+from tests.auth_helpers import mint_token
 from tests.conftest import TestSessionLocal
 
 
@@ -120,13 +120,14 @@ def real_client():
 @pytest.fixture()
 def business_id():
     with TestSessionLocal() as db:
-        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+        clerk_user_id = f"user_{uuid.uuid4().hex}"
+        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", clerk_user_id=clerk_user_id)
         db.add(user)
         db.flush()
         business = Business(owner_id=user.id, business_name="Test Biz")
         db.add(business)
         db.commit()
-        return str(business.id), create_access_token(str(user.id))
+        return str(business.id), mint_token(clerk_user_id, user.email, user.full_name)
 
 
 CLEAN_SALES_CSV = (
@@ -523,14 +524,15 @@ _UPLOAD_ROUTES_UNDER_BUSINESS = [
 def test_upload_routes_forbidden_for_non_owner(real_client, business_id, method, path_template):
     business_id, _owner_token = business_id
     with TestSessionLocal() as db:
+        intruder_clerk_id = f"user_{uuid.uuid4().hex}"
         intruder = User(
             full_name="Intruder",
             email=f"{uuid.uuid4()}@example.com",
-            password_hash=hash_password("password123"),
+            clerk_user_id=intruder_clerk_id,
         )
         db.add(intruder)
         db.commit()
-        intruder_token = create_access_token(str(intruder.id))
+        intruder_token = mint_token(intruder_clerk_id, intruder.email, intruder.full_name)
 
     path = path_template.format(business_id=business_id)
     response = real_client.request(method, path, headers={"Authorization": f"Bearer {intruder_token}"})

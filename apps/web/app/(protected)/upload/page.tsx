@@ -25,7 +25,7 @@ import { Select } from "@/components/ui/Select";
 const POLL_INTERVAL_MS = 2000;
 
 export default function UploadPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -55,14 +55,13 @@ export default function UploadPage() {
   }
 
   async function refreshStatus(sessionId: string, currentBusinessId: string) {
-    if (!accessToken) return null;
     try {
-      const latest = await getUploadStatus(accessToken, currentBusinessId, sessionId);
+      const latest = await getUploadStatus(getToken, currentBusinessId, sessionId);
       setStatus(latest);
 
       if (latest.status === "NEEDS_REVIEW") {
         stopPolling();
-        const rows = await getColumnMappings(accessToken, currentBusinessId, sessionId);
+        const rows = await getColumnMappings(getToken, currentBusinessId, sessionId);
         setMappings(rows);
       } else if (latest.status === "COMPLETED" || latest.status === "FAILED") {
         stopPolling();
@@ -88,7 +87,6 @@ export default function UploadPage() {
   }
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     stopPolling();
     setError(null);
     setBusinessId(id);
@@ -98,7 +96,7 @@ export default function UploadPage() {
     setEditedTargets({});
 
     try {
-      const sessions = await listUploads(accessToken, id);
+      const sessions = await listUploads(getToken, id);
       const latest = sessions[0];
       if (latest) {
         await hydrateSession(latest.id, id);
@@ -110,10 +108,10 @@ export default function UploadPage() {
 
   async function handleUpload(event: React.FormEvent) {
     event.preventDefault();
-    if (!accessToken || !businessId || (!salesFile && !inventoryFile && !expensesFile)) return;
+    if (!businessId || (!salesFile && !inventoryFile && !expensesFile)) return;
     setError(null);
     try {
-      const created = await createUpload(accessToken, businessId, {
+      const created = await createUpload(getToken, businessId, {
         sales: salesFile ?? undefined,
         inventory: inventoryFile ?? undefined,
         expenses: expensesFile ?? undefined,
@@ -127,17 +125,17 @@ export default function UploadPage() {
   }
 
   async function handleConfirmMappings() {
-    if (!accessToken || !businessId || !uploadSessionId) return;
+    if (!businessId || !uploadSessionId) return;
     setError(null);
     try {
       const lowConfidenceMappings = mappings.filter((m) => m.confidenceScore < MAPPING_CONFIDENCE_THRESHOLD);
       for (const mapping of lowConfidenceMappings) {
         const chosenField = editedTargets[mapping.id] ?? mapping.targetField;
         if (chosenField !== mapping.targetField) {
-          await updateColumnMapping(accessToken, businessId, uploadSessionId, mapping.id, chosenField);
+          await updateColumnMapping(getToken, businessId, uploadSessionId, mapping.id, chosenField);
         }
       }
-      await confirmColumnMappings(accessToken, businessId, uploadSessionId);
+      await confirmColumnMappings(getToken, businessId, uploadSessionId);
       setStatus({ status: "PROCESSING", progress: 50, pendingReview: null, duplicateWarning: false });
       startPolling(uploadSessionId, businessId);
     } catch (err) {
@@ -158,20 +156,6 @@ export default function UploadPage() {
 
   if (loading) return null;
 
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to upload data.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
       <div>
@@ -182,7 +166,7 @@ export default function UploadPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {businessId && !status && (

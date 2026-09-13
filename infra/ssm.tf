@@ -43,33 +43,41 @@ resource "aws_ssm_parameter" "db_password" {
   value = random_password.db.result
 }
 
-resource "random_password" "jwt_secret" {
-  length  = 64
-  special = false
-}
-
-resource "aws_ssm_parameter" "jwt_secret_key" {
-  name  = "${local.ssm_path}/JWT_SECRET_KEY"
+# Clerk (app/clerk_auth.py, app/dependencies.py's get_current_user). Same
+# REPLACE_ME_MANUALLY placeholder pattern as OPENAI_API_KEY above -- values
+# come from the Clerk dashboard's API Keys page, not something Terraform
+# can generate. CLERK_JWKS_URL/CLERK_ISSUER are not secret, but SecureString
+# keeps them consistent with everything else in this manually-set category:
+#   aws ssm put-parameter --name /ai-business-os/prod/CLERK_SECRET_KEY \
+#     --type SecureString --value sk_live_... --overwrite
+resource "aws_ssm_parameter" "clerk_secret_key" {
+  name  = "${local.ssm_path}/CLERK_SECRET_KEY"
   type  = "SecureString"
-  value = random_password.jwt_secret.result
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
-resource "aws_ssm_parameter" "jwt_algorithm" {
-  name  = "${local.ssm_path}/JWT_ALGORITHM"
-  type  = "String"
-  value = "HS256"
+resource "aws_ssm_parameter" "clerk_jwks_url" {
+  name  = "${local.ssm_path}/CLERK_JWKS_URL"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
-resource "aws_ssm_parameter" "access_token_expire_minutes" {
-  name  = "${local.ssm_path}/ACCESS_TOKEN_EXPIRE_MINUTES"
-  type  = "String"
-  value = "15"
-}
+resource "aws_ssm_parameter" "clerk_issuer" {
+  name  = "${local.ssm_path}/CLERK_ISSUER"
+  type  = "SecureString"
+  value = "REPLACE_ME_MANUALLY"
 
-resource "aws_ssm_parameter" "refresh_token_expire_days" {
-  name  = "${local.ssm_path}/REFRESH_TOKEN_EXPIRE_DAYS"
-  type  = "String"
-  value = "30"
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "aws_ssm_parameter" "aws_region" {
@@ -224,31 +232,6 @@ resource "aws_ssm_parameter" "rate_limit_default" {
   name  = "${local.ssm_path}/RATE_LIMIT_DEFAULT"
   type  = "String"
   value = "300/minute"
-}
-
-# Auth endpoints (app/routers/auth.py) -- security-motivated, not cost.
-resource "aws_ssm_parameter" "rate_limit_register" {
-  name  = "${local.ssm_path}/RATE_LIMIT_REGISTER"
-  type  = "String"
-  value = "5/hour"
-}
-
-resource "aws_ssm_parameter" "rate_limit_login_ip" {
-  name  = "${local.ssm_path}/RATE_LIMIT_LOGIN_IP"
-  type  = "String"
-  value = "100/hour"
-}
-
-resource "aws_ssm_parameter" "rate_limit_login_email" {
-  name  = "${local.ssm_path}/RATE_LIMIT_LOGIN_EMAIL"
-  type  = "String"
-  value = "10/hour"
-}
-
-resource "aws_ssm_parameter" "rate_limit_refresh" {
-  name  = "${local.ssm_path}/RATE_LIMIT_REFRESH"
-  type  = "String"
-  value = "60/hour"
 }
 
 # LLM/expensive endpoints -- cost circuit-breakers, not security.

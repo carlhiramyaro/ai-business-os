@@ -1,5 +1,6 @@
 "use client";
 
+import { useClerk } from "@clerk/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -16,7 +17,8 @@ const LINKS = [
 ];
 
 export function NavBar() {
-  const { user, logout, loading } = useAuth();
+  const { user, loading } = useAuth();
+  const { signOut } = useClerk();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [prevPathname, setPrevPathname] = useState(pathname);
@@ -68,7 +70,7 @@ export function NavBar() {
             (user ? (
               <div className="flex items-center gap-3">
                 <span className="text-muted">{user.email}</span>
-                <button onClick={logout} className="text-muted underline hover:text-foreground">
+                <button onClick={() => signOut({ redirectUrl: "/login" })} className="text-muted underline hover:text-foreground">
                   Log out
                 </button>
               </div>
@@ -132,7 +134,7 @@ export function NavBar() {
             ))}
             <div className="border-t border-border px-4 py-3 text-sm text-muted">{user.email}</div>
             <button
-              onClick={logout}
+              onClick={() => signOut({ redirectUrl: "/login" })}
               className="block w-full px-4 py-3 text-left text-base text-muted hover:text-foreground"
             >
               Log out

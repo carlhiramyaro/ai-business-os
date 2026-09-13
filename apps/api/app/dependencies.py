@@ -5,9 +5,9 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.clerk_auth import decode_clerk_token
 from app.database import get_db
 from app.models import Business, BusinessFact, Conversation, Insight, Report, UploadSession, User
-from app.security import decode_access_token
 from app.worker_health import workers_online
 
 bearer_scheme = HTTPBearer()
@@ -24,22 +24,39 @@ def get_current_user(
     )
 
     try:
-        payload = decode_access_token(credentials.credentials)
+        payload = decode_clerk_token(credentials.credentials)
     except jwt.PyJWTError:
         raise credentials_error
 
-    if payload.get("type") != "access":
+    clerk_user_id = payload.get("sub")
+    if not clerk_user_id:
         raise credentials_error
 
-    try:
-        user_id = uuid.UUID(payload.get("sub"))
-    except (TypeError, ValueError):
+    user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
+    if user is not None:
+        return user
+
+    # Just-in-time provisioning: this is a Clerk identity we haven't seen
+    # before (first request after sign-up, or a pre-migration account
+    # whose email doesn't yet have a clerk_user_id backfilled). Fall back
+    # to matching by email so an imported account links up on first login
+    # instead of getting a duplicate row.
+    email = payload.get("email")
+    if not email:
         raise credentials_error
 
-    user = db.get(User, user_id)
-    if user is None:
-        raise credentials_error
+    user = db.query(User).filter(User.email == email).first()
+    if user is not None:
+        user.clerk_user_id = clerk_user_id
+        db.commit()
+        db.refresh(user)
+        return user
 
+    full_name = payload.get("full_name") or email
+    user = User(email=email, full_name=full_name, clerk_user_id=clerk_user_id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 

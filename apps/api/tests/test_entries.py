@@ -2,19 +2,7 @@ from datetime import date
 
 from app.chat_tools import get_financial_summary
 from app.models import Customer, Sale, UploadSession
-
-
-def register_and_login(client, email):
-    client.post(
-        "/api/v1/auth/register",
-        json={"fullName": "Test User", "email": email, "password": "password123"},
-    )
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
+from tests.auth_helpers import auth_header, register_and_login
 
 
 def _create_business(client, token, name="Entries Test Co"):
@@ -22,7 +10,7 @@ def _create_business(client, token, name="Entries Test Co"):
 
 
 def test_create_sale_entry_creates_manual_session_and_resolves_customer(client, db_session):
-    token = register_and_login(client, "entries1@example.com")
+    token = register_and_login("entries1@example.com")
     business_id = _create_business(client, token)
 
     response = client.post(
@@ -58,7 +46,7 @@ def test_create_sale_entry_creates_manual_session_and_resolves_customer(client, 
 def test_create_sale_entry_visible_to_chat_financial_summary_tool(client, db_session):
     """The whole point of the shared ingest boundary: a manually-entered row
     needs zero special handling to show up in v0.2's SQL chat tools."""
-    token = register_and_login(client, "entries2@example.com")
+    token = register_and_login("entries2@example.com")
     business_id = _create_business(client, token)
 
     client.post(
@@ -76,7 +64,7 @@ def test_create_sale_entry_visible_to_chat_financial_summary_tool(client, db_ses
 
 
 def test_create_expense_entry(client, db_session):
-    token = register_and_login(client, "entries3@example.com")
+    token = register_and_login("entries3@example.com")
     business_id = _create_business(client, token)
 
     response = client.post(
@@ -94,7 +82,7 @@ def test_create_expense_entry(client, db_session):
 
 
 def test_create_inventory_entry_resolves_supplier(client, db_session):
-    token = register_and_login(client, "entries4@example.com")
+    token = register_and_login("entries4@example.com")
     business_id = _create_business(client, token)
 
     response = client.post(
@@ -113,7 +101,7 @@ def test_create_inventory_entry_resolves_supplier(client, db_session):
 
 
 def test_create_sale_entry_duplicate_warning(client, db_session):
-    token = register_and_login(client, "entries5@example.com")
+    token = register_and_login("entries5@example.com")
     business_id = _create_business(client, token)
     payload = {"saleDate": "2026-03-01", "productName": "Rice", "quantity": 10, "unitPrice": "2.5"}
 
@@ -126,9 +114,9 @@ def test_create_sale_entry_duplicate_warning(client, db_session):
 
 
 def test_entries_forbidden_for_non_owner(client, db_session):
-    token = register_and_login(client, "entries6@example.com")
+    token = register_and_login("entries6@example.com")
     business_id = _create_business(client, token)
-    intruder_token = register_and_login(client, "entries_intruder@example.com")
+    intruder_token = register_and_login("entries_intruder@example.com")
 
     response = client.post(
         f"/api/v1/businesses/{business_id}/entries/sales",

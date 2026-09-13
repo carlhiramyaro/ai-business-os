@@ -12,12 +12,6 @@ export interface AuthUser {
   createdAt: string;
 }
 
-export interface TokenResponse {
-  accessToken: string;
-  refreshToken: string;
-  tokenType: string;
-}
-
 interface ApiError {
   detail: string;
 }
@@ -30,44 +24,20 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function registerUser(fullName: string, email: string, password: string) {
-  return fetch(`${API_URL}/api/v1/auth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fullName, email, password }),
-  }).then((response) => parseJsonOrThrow<AuthUser>(response));
-}
-
-export function loginUser(email: string, password: string) {
-  return fetch(`${API_URL}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  }).then((response) => parseJsonOrThrow<TokenResponse>(response));
-}
-
-// Refresh tokens are single-use with rotation (the backend deletes the
-// presented one and issues a brand-new access/refresh pair on every call,
-// see docs/decisions.md) -- callers must persist BOTH tokens from the
-// response, not just the new access token, or the next refresh attempt
-// fails on an already-consumed refresh token. See lib/auth-context.tsx's
-// proactive refresh loop, the actual caller.
-export function refreshAccessToken(refreshToken: string) {
-  return fetch(`${API_URL}/api/v1/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken }),
-  }).then((response) => parseJsonOrThrow<TokenResponse>(response));
-}
-
 export function getCurrentUser(accessToken: string) {
   return fetch(`${API_URL}/api/v1/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   }).then((response) => parseJsonOrThrow<AuthUser>(response));
 }
 
-function authHeaders(accessToken: string) {
-  return { Authorization: `Bearer ${accessToken}` };
+// Clerk session tokens are short-lived by design (see Clerk's docs on
+// session token lifetime) -- callers pass the SDK's getToken() rather than
+// a cached string, so every request fetches a fresh one instead of risking
+// a stale token a few requests into a long-lived page.
+export type GetToken = () => Promise<string | null>;
+
+async function authHeaders(getToken: GetToken) {
+  return { Authorization: `Bearer ${await getToken()}` };
 }
 
 export interface Business {
@@ -82,23 +52,23 @@ export interface Business {
   updatedAt: string;
 }
 
-export function createBusiness(accessToken: string, businessName: string) {
+export async function createBusiness(getToken: GetToken, businessName: string) {
   return fetch(`${API_URL}/api/v1/businesses/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ businessName }),
   }).then((response) => parseJsonOrThrow<Business>(response));
 }
 
-export function listBusinesses(accessToken: string) {
+export async function listBusinesses(getToken: GetToken) {
   return fetch(`${API_URL}/api/v1/businesses/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<Business[]>(response));
 }
 
-export function getBusiness(accessToken: string, businessId: string) {
+export async function getBusiness(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<Business>(response));
 }
 
@@ -107,8 +77,8 @@ export interface UploadCreateResponse {
   status: string;
 }
 
-export function createUpload(
-  accessToken: string,
+export async function createUpload(
+  getToken: GetToken,
   businessId: string,
   files: { sales?: File; inventory?: File; expenses?: File }
 ) {
@@ -119,7 +89,7 @@ export function createUpload(
 
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/uploads/`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
     body: formData,
   }).then((response) => parseJsonOrThrow<UploadCreateResponse>(response));
 }
@@ -130,9 +100,9 @@ export interface UploadSessionSummary {
   uploadedAt: string;
 }
 
-export function listUploads(accessToken: string, businessId: string) {
+export async function listUploads(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/uploads/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<UploadSessionSummary[]>(response));
 }
 
@@ -148,9 +118,9 @@ export interface UploadStatus {
   duplicateWarning: boolean;
 }
 
-export function getUploadStatus(accessToken: string, businessId: string, uploadSessionId: string) {
+export async function getUploadStatus(getToken: GetToken, businessId: string, uploadSessionId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/uploads/${uploadSessionId}`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<UploadStatus>(response));
 }
 
@@ -164,14 +134,14 @@ export interface ColumnMapping {
   sampleValues: string[] | null;
 }
 
-export function getColumnMappings(accessToken: string, businessId: string, uploadSessionId: string) {
+export async function getColumnMappings(getToken: GetToken, businessId: string, uploadSessionId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/uploads/${uploadSessionId}/column-mappings`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ColumnMapping[]>(response));
 }
 
-export function updateColumnMapping(
-  accessToken: string,
+export async function updateColumnMapping(
+  getToken: GetToken,
   businessId: string,
   uploadSessionId: string,
   mappingId: string,
@@ -181,16 +151,16 @@ export function updateColumnMapping(
     `${API_URL}/api/v1/businesses/${businessId}/uploads/${uploadSessionId}/column-mappings/${mappingId}`,
     {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+      headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
       body: JSON.stringify({ targetField }),
     }
   ).then((response) => parseJsonOrThrow<ColumnMapping>(response));
 }
 
-export function confirmColumnMappings(accessToken: string, businessId: string, uploadSessionId: string) {
+export async function confirmColumnMappings(getToken: GetToken, businessId: string, uploadSessionId: string) {
   return fetch(
     `${API_URL}/api/v1/businesses/${businessId}/uploads/${uploadSessionId}/column-mappings/confirm`,
-    { method: "POST", headers: authHeaders(accessToken) }
+    { method: "POST", headers: await authHeaders(getToken) }
   ).then((response) => parseJsonOrThrow<{ status: string }>(response));
 }
 
@@ -296,30 +266,30 @@ export interface ReportGenerateResponse {
   status: ReportStatus;
 }
 
-export function listReports(accessToken: string, businessId: string) {
+export async function listReports(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/reports/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ReportSummary[]>(response));
 }
 
-export function generateReport(accessToken: string, businessId: string, periodStart: string, periodEnd: string) {
+export async function generateReport(getToken: GetToken, businessId: string, periodStart: string, periodEnd: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/reports/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ periodStart, periodEnd }),
   }).then((response) => parseJsonOrThrow<ReportGenerateResponse>(response));
 }
 
-export function getReport(accessToken: string, businessId: string, reportId: string) {
+export async function getReport(getToken: GetToken, businessId: string, reportId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/reports/${reportId}`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ReportDetail>(response));
 }
 
-export function deleteReport(accessToken: string, businessId: string, reportId: string) {
+export async function deleteReport(getToken: GetToken, businessId: string, reportId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/reports/${reportId}`, {
     method: "DELETE",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   });
 }
 
@@ -340,10 +310,10 @@ export interface ConversationHistory {
   messages: MessageItem[];
 }
 
-export function createConversation(accessToken: string, businessId: string) {
+export async function createConversation(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/chat/`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ConversationCreateResponse>(response));
 }
 
@@ -352,17 +322,17 @@ export interface ChatToolCall {
   arguments: Record<string, unknown>;
 }
 
-export function sendChatMessage(accessToken: string, businessId: string, conversationId: string, message: string) {
+export async function sendChatMessage(getToken: GetToken, businessId: string, conversationId: string, message: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/chat/${conversationId}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ message }),
   }).then((response) => parseJsonOrThrow<{ answer: string; toolCalls: ChatToolCall[] }>(response));
 }
 
-export function getConversation(accessToken: string, businessId: string, conversationId: string) {
+export async function getConversation(getToken: GetToken, businessId: string, conversationId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/chat/${conversationId}`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ConversationHistory>(response));
 }
 
@@ -388,10 +358,10 @@ export interface SaleEntryInput {
   paymentMethod?: string;
 }
 
-export function createSaleEntry(accessToken: string, businessId: string, entry: SaleEntryInput) {
+export async function createSaleEntry(getToken: GetToken, businessId: string, entry: SaleEntryInput) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/sales`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify(entry),
   }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
 }
@@ -404,10 +374,10 @@ export interface ExpenseEntryInput {
   description?: string;
 }
 
-export function createExpenseEntry(accessToken: string, businessId: string, entry: ExpenseEntryInput) {
+export async function createExpenseEntry(getToken: GetToken, businessId: string, entry: ExpenseEntryInput) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/expenses`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify(entry),
   }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
 }
@@ -422,10 +392,10 @@ export interface InventoryEntryInput {
   sellingPrice?: string;
 }
 
-export function createInventoryEntry(accessToken: string, businessId: string, entry: InventoryEntryInput) {
+export async function createInventoryEntry(getToken: GetToken, businessId: string, entry: InventoryEntryInput) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/entries/inventory`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify(entry),
   }).then((response) => parseJsonOrThrow<EntryCreateResponse>(response));
 }
@@ -447,33 +417,33 @@ export interface DocumentStatus {
   overallConfidence: number | null;
 }
 
-export function uploadDocument(accessToken: string, businessId: string, datasetType: string, image: File) {
+export async function uploadDocument(getToken: GetToken, businessId: string, datasetType: string, image: File) {
   const formData = new FormData();
   formData.append("datasetType", datasetType);
   formData.append("image", image);
 
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
     body: formData,
   }).then((response) => parseJsonOrThrow<DocumentCreateResponse>(response));
 }
 
-export function getDocumentStatus(accessToken: string, businessId: string, sessionId: string) {
+export async function getDocumentStatus(getToken: GetToken, businessId: string, sessionId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<DocumentStatus>(response));
 }
 
-export function updateDocumentRows(
-  accessToken: string,
+export async function updateDocumentRows(
+  getToken: GetToken,
   businessId: string,
   sessionId: string,
   extractedRows: Record<string, string>[]
 ) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ extractedRows }),
   }).then((response) => parseJsonOrThrow<DocumentStatus>(response));
 }
@@ -483,10 +453,10 @@ export interface DocumentConfirmResponse {
   duplicateWarning: boolean;
 }
 
-export function confirmDocument(accessToken: string, businessId: string, sessionId: string) {
+export async function confirmDocument(getToken: GetToken, businessId: string, sessionId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/documents/${sessionId}/confirm`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<DocumentConfirmResponse>(response));
 }
 
@@ -538,30 +508,30 @@ export interface Insight {
   createdAt: string;
 }
 
-export function listInsights(accessToken: string, businessId: string) {
+export async function listInsights(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<Insight[]>(response));
 }
 
-export function getUnreadInsightCount(accessToken: string, businessId: string) {
+export async function getUnreadInsightCount(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/unread-count`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<{ unreadCount: number }>(response));
 }
 
-export function markInsightRead(accessToken: string, businessId: string, insightId: string) {
+export async function markInsightRead(getToken: GetToken, businessId: string, insightId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/${insightId}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ read: true }),
   }).then((response) => parseJsonOrThrow<Insight>(response));
 }
 
-export function runInsightsAnalysis(accessToken: string, businessId: string) {
+export async function runInsightsAnalysis(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/insights/run`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<{ status: string }>(response));
 }
 
@@ -572,16 +542,16 @@ export interface BusinessFact {
   createdAt: string;
 }
 
-export function listBusinessFacts(accessToken: string, businessId: string) {
+export async function listBusinessFacts(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/memory/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<BusinessFact[]>(response));
 }
 
-export function deleteBusinessFact(accessToken: string, businessId: string, factId: string) {
+export async function deleteBusinessFact(getToken: GetToken, businessId: string, factId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/memory/${factId}`, {
     method: "DELETE",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   });
 }
 
@@ -595,10 +565,10 @@ export interface LinkCodeResponse {
   whatsappNumber: string | null;
 }
 
-export function createWhatsAppLinkCode(accessToken: string, businessId: string) {
+export async function createWhatsAppLinkCode(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/whatsapp/link-code`, {
     method: "POST",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<LinkCodeResponse>(response));
 }
 
@@ -618,28 +588,28 @@ export interface ChannelIdentitySummary {
   notificationFrequency: NotificationFrequency;
 }
 
-export function listChannels(accessToken: string, businessId: string) {
+export async function listChannels(getToken: GetToken, businessId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/`, {
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   }).then((response) => parseJsonOrThrow<ChannelIdentitySummary[]>(response));
 }
 
-export function updateChannelFrequency(
-  accessToken: string,
+export async function updateChannelFrequency(
+  getToken: GetToken,
   businessId: string,
   channelIdentityId: string,
   notificationFrequency: NotificationFrequency
 ) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/${channelIdentityId}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
     body: JSON.stringify({ notificationFrequency }),
   }).then((response) => parseJsonOrThrow<ChannelIdentitySummary>(response));
 }
 
-export function unlinkChannel(accessToken: string, businessId: string, channelIdentityId: string) {
+export async function unlinkChannel(getToken: GetToken, businessId: string, channelIdentityId: string) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/channels/${channelIdentityId}`, {
     method: "DELETE",
-    headers: authHeaders(accessToken),
+    headers: await authHeaders(getToken),
   });
 }

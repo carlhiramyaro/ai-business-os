@@ -18,11 +18,10 @@ from app.chat_tools import (
 )
 from app.entities import resolve_customer
 from app.models import Business, Expense, Inventory, Sale, UploadSession, User
-from app.security import hash_password
 
 
 def _seed_business(db_session):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Chat Tools Test Co")

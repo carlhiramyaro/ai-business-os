@@ -1,5 +1,6 @@
 import app.routers.chat as chat_router
 from app.chat_generation import ChatAnswer
+from tests.auth_helpers import auth_header, register_and_login
 
 
 def fake_generate_chat_answer(db, business, question, history):
@@ -9,23 +10,10 @@ def fake_generate_chat_answer(db, business, question, history):
     )
 
 
-def register_and_login(client, email):
-    client.post(
-        "/api/v1/auth/register",
-        json={"fullName": "Test User", "email": email, "password": "password123"},
-    )
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _setup(monkeypatch, client, email):
     monkeypatch.setattr(chat_router, "generate_chat_answer", fake_generate_chat_answer)
 
-    token = register_and_login(client, email)
+    token = register_and_login(email)
     business_id = client.post(
         "/api/v1/businesses/", json={"businessName": "Chat Test Co"}, headers=auth_header(token)
     ).json()["id"]
@@ -91,7 +79,7 @@ def test_chat_forbidden_for_non_owner(monkeypatch, client):
         f"/api/v1/businesses/{business_id}/chat/", headers=auth_header(token)
     ).json()["conversationId"]
 
-    other_token = register_and_login(client, "intruder_chat@example.com")
+    other_token = register_and_login("intruder_chat@example.com")
     response = client.get(
         f"/api/v1/businesses/{business_id}/chat/{conversation_id}", headers=auth_header(other_token)
     )

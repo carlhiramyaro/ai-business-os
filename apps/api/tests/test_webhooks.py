@@ -36,7 +36,6 @@ from app.models import (
     User,
     WebhookEvent,
 )
-from app.security import create_access_token, hash_password
 from main import app
 from tests.conftest import TestSessionLocal
 
@@ -114,7 +113,7 @@ def real_client():
 @pytest.fixture()
 def linked_identity():
     with TestSessionLocal() as db:
-        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
         db.add(user)
         db.flush()
         business = Business(owner_id=user.id, business_name="Webhook Co")

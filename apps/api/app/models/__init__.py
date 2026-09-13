@@ -9,11 +9,10 @@ from app.models.pending_entry import PendingEntry
 from app.models.records import Expense, Inventory, Sale
 from app.models.report import Report, ReportSection
 from app.models.upload import ColumnMapping, DatasetProfile, DocumentExtraction, UploadSession
-from app.models.user import RefreshToken, User
+from app.models.user import User
 
 __all__ = [
     "User",
-    "RefreshToken",
     "Business",
     "UploadSession",
     "DatasetProfile",

@@ -18,13 +18,12 @@ from app.data_entry import (
 )
 from app.ingestion import ingest_rows
 from app.models import Business, Expense, Inventory, PendingEntry, Sale, UploadSession, User
-from app.security import hash_password
 
 TODAY = date(2026, 3, 1)
 
 
 def _seed_business(db):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("pw"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db.add(user)
     db.flush()
     business = Business(owner_id=user.id, business_name="Data Entry Co")

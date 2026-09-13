@@ -11,15 +11,15 @@ any other test's state.
 
 import time
 
+import jwt
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from structlog.testing import capture_logs
 
-import app.routers.auth as auth_module
 from app.rate_limit import RateLimit, _get_limiter, client_ip, rate_limit_key
-from app.security import create_access_token
+from tests.auth_helpers import mint_token
 
 TEST_STORAGE_URI = "redis://localhost:6379/15"
 
@@ -73,7 +73,7 @@ def test_client_ip_falls_back_to_peer_without_proxy_header():
 
 
 def test_rate_limit_key_prefers_user_id():
-    token = create_access_token("11111111-1111-1111-1111-111111111111")
+    token = mint_token("11111111-1111-1111-1111-111111111111", "ratelimit@example.com")
     request = _make_request(headers={"Authorization": f"Bearer {token}"})
     assert rate_limit_key(request) == "user:11111111-1111-1111-1111-111111111111"
 
@@ -164,126 +164,17 @@ def test_app_level_default_rate_limit_dependency_is_present():
     assert any(isinstance(d.dependency, RateLimit) for d in app.router.dependencies)
 
 
-# v0.5 slice 3, Commit 4: app/routers/auth.py's _RATE_LIMIT_LOGIN_IP/
-# _RATE_LIMIT_LOGIN_EMAIL/_RATE_LIMIT_REGISTER/_RATE_LIMIT_REFRESH are read
-# from the environment once at import time (matching ANALYSIS_INTERVAL_
-# SECONDS' pattern), not per-call -- so these tests override them with
-# monkeypatch.setattr on the already-imported module, not monkeypatch.
-# setenv (which check_rate_limit's own RATE_LIMIT_ENABLED/
-# RATE_LIMIT_STORAGE_URI reads dynamically and setenv works fine for).
-
-
-def _register(client, email="ratelimit@example.com", password="password123"):
-    return client.post(
-        "/api/v1/auth/register", json={"fullName": "Rate Limit Test", "email": email, "password": password}
-    )
-
-
-def _login(client, email="ratelimit@example.com", password="password123", headers=None):
-    return client.post("/api/v1/auth/login", json={"email": email, "password": password}, headers=headers or {})
+# v0.5 slice 3, Commit 4 originally added rate limits on /auth/register,
+# /auth/login, /auth/refresh -- removed along with those endpoints when
+# auth moved to Clerk (docs/decisions.md's Clerk-migration entry). Clerk
+# owns registration/login abuse protection now. This fixture is kept: the
+# LLM/expensive-endpoint tests below still use it.
 
 
 @pytest.fixture()
 def _enable_rate_limiting_for_auth(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("RATE_LIMIT_STORAGE_URI", TEST_STORAGE_URI)
-
-
-def test_register_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    """Deliberately does NOT monkeypatch _RATE_LIMIT_REGISTER: unlike
-    login's checks (a plain function reading the module global at call
-    time), register's limit is `Depends(RateLimit(_RATE_LIMIT_REGISTER,
-    ...))` -- the spec string is bound into the RateLimit instance once,
-    at route-decoration time (module import), matching the same
-    read-once-at-startup convention as ANALYSIS_INTERVAL_SECONDS.
-    monkeypatch.setattr on the module name afterward can't reach the
-    already-constructed instance, so this exercises the real default
-    (5/hour) instead."""
-    for i in range(5):
-        response = client.post(
-            "/api/v1/auth/register",
-            json={"fullName": "Test", "email": f"user{i}@example.com", "password": "password123"},
-        )
-        assert response.status_code == 201
-
-    response = client.post(
-        "/api/v1/auth/register",
-        json={"fullName": "Test", "email": "user-over-limit@example.com", "password": "password123"},
-    )
-    assert response.status_code == 429
-    assert int(response.headers["Retry-After"]) > 0
-
-
-def test_login_email_limit_trips_even_across_rotating_ips(client, _enable_rate_limiting_for_auth, monkeypatch):
-    """The regression guard for the actual security case: an attacker
-    rotating IPs must not be able to evade the per-email brute-force
-    limit just because the per-IP limit is generous."""
-    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_EMAIL", "2/hour")
-    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_IP", "1000/hour")
-    _register(client, "target@example.com")
-
-    for i in range(2):
-        response = _login(
-            client, email="target@example.com", password="wrong", headers={"X-Forwarded-For": f"10.0.0.{i}"}
-        )
-        assert response.status_code == 401  # wrong password, not yet limited
-
-    limited = _login(
-        client, email="target@example.com", password="wrong", headers={"X-Forwarded-For": "10.0.0.99"}
-    )
-    assert limited.status_code == 429
-
-
-def test_login_429_message_is_identical_for_known_and_unknown_email(
-    client, _enable_rate_limiting_for_auth, monkeypatch
-):
-    """Must not regress the existing enumeration defense (auth.py already
-    returns an identical 401 for unknown-email vs. wrong-password) -- the
-    429 message must carry the same non-distinguishing guarantee."""
-    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_EMAIL", "2/hour")
-    monkeypatch.setattr(auth_module, "_RATE_LIMIT_LOGIN_IP", "1000/hour")
-    _register(client, "known@example.com")
-
-    for _ in range(2):
-        _login(client, email="known@example.com", password="wrong")
-    known_429 = _login(client, email="known@example.com", password="wrong")
-    assert known_429.status_code == 429
-
-    for _ in range(2):
-        _login(client, email="nobody-at-all@example.com", password="wrong")
-    unknown_429 = _login(client, email="nobody-at-all@example.com", password="wrong")
-    assert unknown_429.status_code == 429
-
-    # Retry-After's numeric value legitimately differs by a few seconds
-    # (real wall-clock time elapsed between the two request sequences) --
-    # compare the message with digits normalized out, not byte-for-byte.
-    def _template(detail: str) -> str:
-        return "".join("N" if ch.isdigit() else ch for ch in detail)
-
-    assert _template(known_429.json()["detail"]) == _template(unknown_429.json()["detail"])
-
-
-def test_refresh_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    """Same read-once-at-import constraint as register above -- the
-    default (60/hour) is too many requests to loop directly in a fast
-    test, so this pre-exhausts the exact (scope, key) the real route uses
-    via check_rate_limit directly, then confirms the real endpoint (same
-    underlying Redis counter) is already limited."""
-    from app.rate_limit import check_rate_limit
-
-    _register(client)
-    refresh_token = _login(client).json()["refreshToken"]
-
-    # TestClient's request.client.host is the fixed string "testclient"
-    # (no real socket involved) -- confirmed directly against a throwaway
-    # app; with no X-Forwarded-For header sent, this is the key
-    # rate_limit_key resolves to for every unauthenticated TestClient
-    # request in this test.
-    for _ in range(60):
-        check_rate_limit(auth_module._RATE_LIMIT_REFRESH, "refresh", "ip:testclient")
-
-    response = client.post("/api/v1/auth/refresh", json={"refreshToken": refresh_token})
-    assert response.status_code == 429
 
 
 # v0.5 slice 3, Commit 5: LLM/expensive-endpoint limits. Same
@@ -299,11 +190,7 @@ def test_refresh_limit_returns_429_after_threshold(client, _enable_rate_limiting
 # itself uses, or this would pass for the wrong reason.
 
 from app.rate_limit import check_rate_limit  # noqa: E402
-
-
-def _register_and_login(client, email):
-    client.post("/api/v1/auth/register", json={"fullName": "Test", "email": email, "password": "password123"})
-    return client.post("/api/v1/auth/login", json={"email": email, "password": "password123"}).json()["accessToken"]
+from tests.auth_helpers import register_and_login as _register_and_login  # noqa: E402
 
 
 def _create_business(client, token, name="Test Biz"):
@@ -314,16 +201,17 @@ def _create_business(client, token, name="Test Biz"):
 
 
 def _decode_sub(access_token: str) -> str:
-    from app.security import decode_access_token
-
-    return decode_access_token(access_token)["sub"]
+    # Unverified: this token was minted by this same test process (see
+    # tests/auth_helpers.py), so there's nothing to verify against --
+    # just reading back the `sub` claim it was given.
+    return jwt.decode(access_token, options={"verify_signature": False})["sub"]
 
 
 _FAKE_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def test_chat_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    token = _register_and_login(client, "chat-limit@example.com")
+    token = _register_and_login("chat-limit@example.com")
     business_id = _create_business(client, token)
 
     for _ in range(20):
@@ -340,7 +228,7 @@ def test_chat_limit_returns_429_after_threshold(client, _enable_rate_limiting_fo
 def test_chat_limit_is_shared_across_a_users_businesses_not_per_business(client, _enable_rate_limiting_for_auth):
     """The cost this limit bounds is per-user (real OpenAI spend), not
     per-business -- a user with two businesses shares one chat budget."""
-    token = _register_and_login(client, "multi-biz@example.com")
+    token = _register_and_login("multi-biz@example.com")
     business_a = _create_business(client, token, "Biz A")
     business_b = _create_business(client, token, "Biz B")
 
@@ -356,8 +244,8 @@ def test_chat_limit_is_shared_across_a_users_businesses_not_per_business(client,
 
 
 def test_chat_limit_is_not_shared_across_users(client, _enable_rate_limiting_for_auth):
-    token_a = _register_and_login(client, "user-a@example.com")
-    token_b = _register_and_login(client, "user-b@example.com")
+    token_a = _register_and_login("user-a@example.com")
+    token_b = _register_and_login("user-b@example.com")
     business_b_id = _create_business(client, token_b, "User B's Biz")
 
     for _ in range(20):
@@ -375,7 +263,7 @@ def test_chat_limit_is_not_shared_across_users(client, _enable_rate_limiting_for
 
 
 def test_reports_generate_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    token = _register_and_login(client, "reports-limit@example.com")
+    token = _register_and_login("reports-limit@example.com")
     business_id = _create_business(client, token)
 
     for _ in range(10):
@@ -390,7 +278,7 @@ def test_reports_generate_limit_returns_429_after_threshold(client, _enable_rate
 
 
 def test_insights_run_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    token = _register_and_login(client, "insights-limit@example.com")
+    token = _register_and_login("insights-limit@example.com")
     business_id = _create_business(client, token)
 
     for _ in range(10):
@@ -403,7 +291,7 @@ def test_insights_run_limit_returns_429_after_threshold(client, _enable_rate_lim
 
 
 def test_uploads_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    token = _register_and_login(client, "uploads-limit@example.com")
+    token = _register_and_login("uploads-limit@example.com")
     business_id = _create_business(client, token)
 
     for _ in range(30):
@@ -416,7 +304,7 @@ def test_uploads_limit_returns_429_after_threshold(client, _enable_rate_limiting
 
 
 def test_documents_limit_returns_429_after_threshold(client, _enable_rate_limiting_for_auth):
-    token = _register_and_login(client, "documents-limit@example.com")
+    token = _register_and_login("documents-limit@example.com")
     business_id = _create_business(client, token)
 
     for _ in range(60):

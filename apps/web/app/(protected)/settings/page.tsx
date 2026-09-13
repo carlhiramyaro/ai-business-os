@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -49,7 +48,7 @@ function useCountdown(expiresAt: string | null) {
 }
 
 export default function SettingsPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -61,16 +60,14 @@ export default function SettingsPage() {
   const expired = secondsLeft === 0;
 
   async function loadChannels(id: string) {
-    if (!accessToken) return;
     try {
-      setChannels(await listChannels(accessToken, id));
+      setChannels(await listChannels(getToken, id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load linked numbers");
     }
   }
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     setError(null);
     setBusinessId(id);
     setChannels(null);
@@ -79,11 +76,11 @@ export default function SettingsPage() {
   }
 
   async function handleGenerateCode() {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     setGenerating(true);
     try {
-      setLinkCode(await createWhatsAppLinkCode(accessToken, businessId));
+      setLinkCode(await createWhatsAppLinkCode(getToken, businessId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate a link code");
     } finally {
@@ -92,10 +89,10 @@ export default function SettingsPage() {
   }
 
   async function handleUnlink(channelIdentityId: string) {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     try {
-      await unlinkChannel(accessToken, businessId, channelIdentityId);
+      await unlinkChannel(getToken, businessId, channelIdentityId);
       setChannels((prev) => prev?.filter((c) => c.id !== channelIdentityId) ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not unlink number");
@@ -103,7 +100,7 @@ export default function SettingsPage() {
   }
 
   async function handleFrequencyChange(channelIdentityId: string, frequency: NotificationFrequency) {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     // Update immediately, roll back on failure -- picking a value from a
     // <select> should feel instant, not wait on a round trip.
@@ -112,7 +109,7 @@ export default function SettingsPage() {
       (prev) => prev?.map((c) => (c.id === channelIdentityId ? { ...c, notificationFrequency: frequency } : c)) ?? null
     );
     try {
-      await updateChannelFrequency(accessToken, businessId, channelIdentityId, frequency);
+      await updateChannelFrequency(getToken, businessId, channelIdentityId, frequency);
     } catch (err) {
       setChannels(previous ?? null);
       setError(err instanceof Error ? err.message : "Could not update notification setting");
@@ -120,20 +117,6 @@ export default function SettingsPage() {
   }
 
   if (loading) return null;
-
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to view settings.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
@@ -145,7 +128,7 @@ export default function SettingsPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {businessId && (

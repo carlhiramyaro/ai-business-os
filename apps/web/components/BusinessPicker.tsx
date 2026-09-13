@@ -1,17 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Business, createBusiness, listBusinesses } from "@/lib/api";
+import { Business, GetToken, createBusiness, listBusinesses } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 export function BusinessPicker({
-  accessToken,
+  getToken,
   selectedBusinessId,
   onSelect,
 }: {
-  accessToken: string;
+  getToken: GetToken;
   selectedBusinessId: string | null;
   onSelect: (businessId: string) => void;
 }) {
@@ -22,18 +22,18 @@ export function BusinessPicker({
   const [newBusinessName, setNewBusinessName] = useState("");
 
   useEffect(() => {
-    listBusinesses(accessToken)
+    listBusinesses(getToken)
       .then(setBusinesses)
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load businesses"))
       .finally(() => setLoading(false));
-  }, [accessToken]);
+  }, [getToken]);
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
     if (!newBusinessName.trim()) return;
     setError(null);
     try {
-      const business = await createBusiness(accessToken, newBusinessName);
+      const business = await createBusiness(getToken, newBusinessName);
       setBusinesses((prev) => [...prev, business]);
       setNewBusinessName("");
       setCreating(false);

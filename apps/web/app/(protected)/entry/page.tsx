@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import {
   CANONICAL_FIELDS,
   DocumentStatus,
+  GetToken,
   confirmDocument,
   createExpenseEntry,
   createInventoryEntry,
@@ -35,25 +35,11 @@ function todayIso() {
 }
 
 export default function EntryPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [entryType, setEntryType] = useState<EntryType>("sale");
 
   if (loading) return null;
-
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to add an entry.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
@@ -64,7 +50,7 @@ export default function EntryPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={setBusinessId} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={setBusinessId} />
       </Card>
 
       {businessId && (
@@ -86,10 +72,10 @@ export default function EntryPage() {
             ))}
           </div>
 
-          {entryType === "sale" && <SaleForm accessToken={accessToken} businessId={businessId} />}
-          {entryType === "expense" && <ExpenseForm accessToken={accessToken} businessId={businessId} />}
-          {entryType === "inventory" && <InventoryForm accessToken={accessToken} businessId={businessId} />}
-          {entryType === "photo" && <PhotoForm accessToken={accessToken} businessId={businessId} />}
+          {entryType === "sale" && <SaleForm getToken={getToken} businessId={businessId} />}
+          {entryType === "expense" && <ExpenseForm getToken={getToken} businessId={businessId} />}
+          {entryType === "inventory" && <InventoryForm getToken={getToken} businessId={businessId} />}
+          {entryType === "photo" && <PhotoForm getToken={getToken} businessId={businessId} />}
         </>
       )}
     </div>
@@ -117,7 +103,7 @@ function SuccessBanner({ duplicateWarning, onAddAnother }: { duplicateWarning: b
   );
 }
 
-function SaleForm({ accessToken, businessId }: { accessToken: string; businessId: string }) {
+function SaleForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
   const [saleDate, setSaleDate] = useState(todayIso());
   const [productName, setProductName] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -141,7 +127,7 @@ function SaleForm({ accessToken, businessId }: { accessToken: string; businessId
     setError(null);
     setSubmitting(true);
     try {
-      const created = await createSaleEntry(accessToken, businessId, {
+      const created = await createSaleEntry(getToken, businessId, {
         saleDate,
         productName,
         quantity: Number(quantity),
@@ -207,7 +193,7 @@ function SaleForm({ accessToken, businessId }: { accessToken: string; businessId
   );
 }
 
-function ExpenseForm({ accessToken, businessId }: { accessToken: string; businessId: string }) {
+function ExpenseForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
   const [expenseDate, setExpenseDate] = useState(todayIso());
   const [category, setCategory] = useState("");
   const [vendor, setVendor] = useState("");
@@ -229,7 +215,7 @@ function ExpenseForm({ accessToken, businessId }: { accessToken: string; busines
     setError(null);
     setSubmitting(true);
     try {
-      const created = await createExpenseEntry(accessToken, businessId, {
+      const created = await createExpenseEntry(getToken, businessId, {
         expenseDate,
         category,
         vendor: vendor || undefined,
@@ -283,7 +269,7 @@ function ExpenseForm({ accessToken, businessId }: { accessToken: string; busines
   );
 }
 
-function InventoryForm({ accessToken, businessId }: { accessToken: string; businessId: string }) {
+function InventoryForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
   const [productName, setProductName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -306,7 +292,7 @@ function InventoryForm({ accessToken, businessId }: { accessToken: string; busin
     setError(null);
     setSubmitting(true);
     try {
-      const created = await createInventoryEntry(accessToken, businessId, {
+      const created = await createInventoryEntry(getToken, businessId, {
         productName,
         quantity: Number(quantity),
         supplier: supplier || undefined,
@@ -374,7 +360,7 @@ const DATASET_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "inventory", label: "Inventory (supplier invoice)" },
 ];
 
-function PhotoForm({ accessToken, businessId }: { accessToken: string; businessId: string }) {
+function PhotoForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
   const [datasetType, setDatasetType] = useState("expenses");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<DocumentStatus | null>(null);
@@ -400,7 +386,7 @@ function PhotoForm({ accessToken, businessId }: { accessToken: string; businessI
 
   async function refreshStatus(id: string) {
     try {
-      const latest = await getDocumentStatus(accessToken, businessId, id);
+      const latest = await getDocumentStatus(getToken, businessId, id);
       setStatus(latest);
       if (latest.status === "NEEDS_REVIEW" && latest.extractedRows) {
         stopPolling();
@@ -430,7 +416,7 @@ function PhotoForm({ accessToken, businessId }: { accessToken: string; businessI
     setError(null);
     setUploading(true);
     try {
-      const created = await uploadDocument(accessToken, businessId, datasetType, file);
+      const created = await uploadDocument(getToken, businessId, datasetType, file);
       setSessionId(created.uploadSessionId);
       setStatus({ status: "PROCESSING", progress: 50, datasetType, extractedRows: null, overallConfidence: null });
       startPolling(created.uploadSessionId);
@@ -450,8 +436,8 @@ function PhotoForm({ accessToken, businessId }: { accessToken: string; businessI
     setError(null);
     setConfirming(true);
     try {
-      await updateDocumentRows(accessToken, businessId, sessionId, rows);
-      const result = await confirmDocument(accessToken, businessId, sessionId);
+      await updateDocumentRows(getToken, businessId, sessionId, rows);
+      const result = await confirmDocument(getToken, businessId, sessionId);
       setConfirmResult({ duplicateWarning: result.duplicateWarning });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not confirm extracted rows");

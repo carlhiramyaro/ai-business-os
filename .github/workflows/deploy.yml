@@ -22,6 +22,11 @@ env:
   INSTANCE_ID: i-0b9fc03ba386ec32f
   # Domain's api subdomain -- must match infra/variables.tf's domain_name.
   API_URL: https://api.iamledger.app
+  # Clerk publishable keys are designed to be embedded in client bundles
+  # (unlike CLERK_SECRET_KEY, which only ever lives in SSM -- see
+  # infra/ssm.tf) -- from the Clerk dashboard's API Keys page, production
+  # instance. Replace once a real Clerk app exists.
+  CLERK_PUBLISHABLE_KEY: pk_live_REPLACE_ME
 
 jobs:
   build-and-push:
@@ -58,11 +63,13 @@ jobs:
         with:
           context: apps/web
           push: true
-          # NEXT_PUBLIC_API_URL is inlined at build time -- see
-          # apps/web/Dockerfile's docstring -- so it must be supplied here,
-          # not left for the container to read at runtime.
+          # NEXT_PUBLIC_API_URL and NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are
+          # both inlined at build time -- see apps/web/Dockerfile's
+          # docstring -- so they must be supplied here, not left for the
+          # container to read at runtime.
           build-args: |
             NEXT_PUBLIC_API_URL=${{ env.API_URL }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ env.CLERK_PUBLISHABLE_KEY }}
           tags: ${{ env.ECR_REGISTRY }}/ai-business-os/web:${{ steps.tag.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

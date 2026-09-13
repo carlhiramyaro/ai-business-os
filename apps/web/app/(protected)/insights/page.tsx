@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -28,7 +27,7 @@ const SEVERITY_TONE: Record<InsightSeverity, "danger" | "warning" | "neutral"> =
 };
 
 export default function InsightsPage() {
-  const { accessToken, loading } = useAuth();
+  const { getToken, loading } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   const [businessId, setBusinessId] = useState<string | null>(null);
@@ -54,24 +53,22 @@ export default function InsightsPage() {
   }
 
   async function refresh(currentBusinessId: string) {
-    if (!accessToken) return;
     const [insightList, unread] = await Promise.all([
-      listInsights(accessToken, currentBusinessId),
-      getUnreadInsightCount(accessToken, currentBusinessId),
+      listInsights(getToken, currentBusinessId),
+      getUnreadInsightCount(getToken, currentBusinessId),
     ]);
     setInsights(insightList);
     setUnreadCount(unread.unreadCount);
   }
 
   async function handleSelectBusiness(id: string) {
-    if (!accessToken) return;
     stopPolling();
     setError(null);
     setBusinessId(id);
     setInsights(null);
     setRunning(false);
     try {
-      const [business] = await Promise.all([getBusiness(accessToken, id), refresh(id)]);
+      const [business] = await Promise.all([getBusiness(getToken, id), refresh(id)]);
       setCurrency(business.currency ?? "GHS");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load insights");
@@ -79,12 +76,12 @@ export default function InsightsPage() {
   }
 
   async function handleRunAnalysis() {
-    if (!accessToken || !businessId) return;
+    if (!businessId) return;
     setError(null);
     setRunning(true);
     const baselineCount = insights?.length ?? 0;
     try {
-      await runInsightsAnalysis(accessToken, businessId);
+      await runInsightsAnalysis(getToken, businessId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start analysis");
       setRunning(false);
@@ -95,7 +92,7 @@ export default function InsightsPage() {
     pollRef.current = setInterval(async () => {
       pollCountRef.current += 1;
       try {
-        const insightList = await listInsights(accessToken, businessId);
+        const insightList = await listInsights(getToken, businessId);
         if (insightList.length !== baselineCount || pollCountRef.current >= MAX_POLLS) {
           stopPolling();
           setRunning(false);
@@ -110,9 +107,9 @@ export default function InsightsPage() {
   }
 
   async function handleOpenInsight(insight: Insight) {
-    if (!accessToken || !businessId || insight.isRead) return;
+    if (!businessId || insight.isRead) return;
     try {
-      await markInsightRead(accessToken, businessId, insight.id);
+      await markInsightRead(getToken, businessId, insight.id);
       setInsights((prev) => prev?.map((i) => (i.id === insight.id ? { ...i, isRead: true } : i)) ?? null);
       setUnreadCount((prev) => Math.max(0, prev - 1));
     } catch (err) {
@@ -121,20 +118,6 @@ export default function InsightsPage() {
   }
 
   if (loading) return null;
-
-  if (!accessToken) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6 sm:py-16">
-        <p className="text-sm text-muted">
-          Please{" "}
-          <Link href="/login" className="text-brand underline">
-            log in
-          </Link>{" "}
-          to view insights.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-16">
@@ -149,7 +132,7 @@ export default function InsightsPage() {
 
       <Card>
         <label className="mb-2 block text-sm font-medium text-foreground">Business</label>
-        <BusinessPicker accessToken={accessToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
+        <BusinessPicker getToken={getToken} selectedBusinessId={businessId} onSelect={handleSelectBusiness} />
       </Card>
 
       {businessId && (

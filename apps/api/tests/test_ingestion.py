@@ -6,11 +6,10 @@ import pytest
 
 from app.ingestion import _cast_value, _content_hash, ingest_rows, parse_date_value
 from app.models import Business, Customer, Expense, Inventory, Sale, Supplier, UploadSession, User
-from app.security import hash_password
 
 
 def _seed_session(db_session, source_type="csv"):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Ingestion Test Co")

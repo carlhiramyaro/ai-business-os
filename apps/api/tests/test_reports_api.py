@@ -2,6 +2,7 @@ from datetime import date
 
 from app.models import Business, UploadSession
 from app.report_generation import generate_report
+from tests.auth_helpers import auth_header, register_and_login
 
 PERIOD_START = date(2026, 1, 1)
 PERIOD_END = date(2026, 1, 31)
@@ -19,25 +20,12 @@ def fake_call_llm(system_prompt, user_content):
     return {"findings": "Fine.", "confidence": 0.8}
 
 
-def register_and_login(client, email):
-    client.post(
-        "/api/v1/auth/register",
-        json={"fullName": "Test User", "email": email, "password": "password123"},
-    )
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _create_report(monkeypatch, client, db_session, email):
     monkeypatch.setattr("app.agents._call_llm", fake_call_llm)
     # generate_report populates RAG embeddings for the report as a side
     # effect (app/embedding_generation.py) -- a real OpenAI call if unmocked.
     monkeypatch.setattr("app.embedding_generation.generate_embedding", lambda text: [0.0] * 1536)
-    token = register_and_login(client, email)
+    token = register_and_login(email)
 
     created = client.post(
         "/api/v1/businesses/", json={"businessName": "Reports Co"}, headers=auth_header(token)
@@ -90,7 +78,7 @@ def test_get_report_groups_sections_by_type(monkeypatch, client, db_session):
 
 def test_get_report_forbidden_for_non_owner(monkeypatch, client, db_session):
     _, business_id, report_id = _create_report(monkeypatch, client, db_session, "reports3@example.com")
-    other_token = register_and_login(client, "intruder_reports@example.com")
+    other_token = register_and_login("intruder_reports@example.com")
 
     response = client.get(
         f"/api/v1/businesses/{business_id}/reports/{report_id}", headers=auth_header(other_token)
@@ -117,7 +105,7 @@ def test_generate_report_endpoint_rejects_inverted_range(monkeypatch, client, db
     # comment on that) -- this request 400s in the router before .delay() is
     # ever called, so the SAVEPOINT-rollback client/db_session fixtures are fine.
     monkeypatch.setattr("app.agents._call_llm", fake_call_llm)
-    token = register_and_login(client, "reports6@example.com")
+    token = register_and_login("reports6@example.com")
 
     created = client.post(
         "/api/v1/businesses/", json={"businessName": "Inverted Range Co"}, headers=auth_header(token)

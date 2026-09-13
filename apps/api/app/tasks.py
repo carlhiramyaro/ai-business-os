@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 from langfuse import observe, propagate_attributes
 from sqlalchemy.orm import Session
 
-from app.auth_maintenance import delete_expired_refresh_tokens
 from app.celery_app import celery_app
 from app.channels import (
     MAX_HISTORY_MESSAGES,
@@ -571,22 +570,3 @@ def dispatch_whatsapp_digests_task():
     finally:
         db.close()
     logger.info("whatsapp_digests_dispatched", queued_count=queued)
-
-
-@celery_app.task(name="cleanup_expired_refresh_tokens")
-def cleanup_expired_refresh_tokens_task():
-    """v0.5 slice 3: beat-scheduled (app/celery_app.py's beat_schedule) --
-    without this, expired RefreshToken rows only ever get deleted lazily,
-    on the specific unlucky path where someone tries to *use* an
-    already-expired token, or explicitly on /logout. A user who never logs
-    out (the common case) leaves an ever-growing pile of expired rows
-    forever. Logs the deleted count as the only observable signal this ran
-    at all -- makes "is the table being kept flat" a CloudWatch query
-    instead of a psql session, and a sudden spike in the count is itself a
-    legitimate signal (mass logout, or a token-issuance bug)."""
-    db: Session = SessionLocal()
-    try:
-        deleted = delete_expired_refresh_tokens(db)
-    finally:
-        db.close()
-    logger.info("refresh_tokens_cleaned", deleted_count=deleted)

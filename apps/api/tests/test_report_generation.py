@@ -4,7 +4,6 @@ from decimal import Decimal
 
 from app.models import Business, Expense, Inventory, ReportSection, Sale, UploadSession, User
 from app.report_generation import generate_report
-from app.security import hash_password
 
 
 def fake_call_llm(system_prompt, user_content):
@@ -24,7 +23,7 @@ PERIOD_END = date(2026, 1, 31)
 
 
 def _seed_business_with_data(db_session, sale_date=None, expense_date=None, raw_row_number=1):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
 

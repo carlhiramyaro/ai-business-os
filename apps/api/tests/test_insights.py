@@ -7,7 +7,7 @@ from app.business_facts import remember_fact
 from app.agents import currency_clause, narrate_insight
 from app.insights_generation import run_business_analysis
 from app.models import Business, BusinessFact, Embedding, Expense, Insight, Inventory, Sale, UploadSession, User
-from app.security import hash_password
+from tests.auth_helpers import auth_header, register_and_login
 from tests.conftest import TestSessionLocal
 
 TODAY = date(2026, 3, 1)
@@ -15,16 +15,6 @@ TODAY = date(2026, 3, 1)
 
 def fake_narration_llm(system_prompt, user_content):
     return {"title": "Test insight", "body": "Test narration body."}
-
-
-def register_and_login(client, email):
-    client.post("/api/v1/auth/register", json={"fullName": "Test User", "email": email, "password": "password123"})
-    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
-    return login_response.json()["accessToken"]
-
-
-def auth_header(token):
-    return {"Authorization": f"Bearer {token}"}
 
 
 # --- Part A: run_business_analysis against a real, committed DB ----------
@@ -38,7 +28,7 @@ def auth_header(token):
 
 
 def _seed_business_with_signals(db):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db.add(user)
     db.flush()
     business = Business(owner_id=user.id, business_name="Signal Test Co")
@@ -209,7 +199,7 @@ def test_run_business_analysis_task_wiring(monkeypatch):
 
     db = TestSessionLocal()
     try:
-        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+        user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
         db.add(user)
         db.flush()
         business = Business(owner_id=user.id, business_name="Empty Co")
@@ -233,7 +223,7 @@ def test_run_business_analysis_task_wiring(monkeypatch):
 
 
 def test_insights_list_unread_count_and_mark_read(client, db_session):
-    token = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    token = register_and_login(f"{uuid.uuid4()}@example.com")
     created = client.post(
         "/api/v1/businesses/", json={"businessName": "Insights Co"}, headers=auth_header(token)
     ).json()
@@ -277,8 +267,8 @@ def test_insights_list_unread_count_and_mark_read(client, db_session):
 
 
 def test_insights_scoped_to_owning_business(client, db_session):
-    token_a = register_and_login(client, f"{uuid.uuid4()}@example.com")
-    token_b = register_and_login(client, f"{uuid.uuid4()}@example.com")
+    token_a = register_and_login(f"{uuid.uuid4()}@example.com")
+    token_b = register_and_login(f"{uuid.uuid4()}@example.com")
     business_a = client.post(
         "/api/v1/businesses/", json={"businessName": "Business A"}, headers=auth_header(token_a)
     ).json()

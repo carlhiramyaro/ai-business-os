@@ -2,11 +2,10 @@ import uuid
 
 from app.business_facts import delete_fact, remember_fact
 from app.models import Business, BusinessFact, Embedding, User
-from app.security import hash_password
 
 
 def _seed_business(db_session):
-    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com", password_hash=hash_password("password123"))
+    user = User(full_name="Owner", email=f"{uuid.uuid4()}@example.com")
     db_session.add(user)
     db_session.flush()
     business = Business(owner_id=user.id, business_name="Memory Test Co")
