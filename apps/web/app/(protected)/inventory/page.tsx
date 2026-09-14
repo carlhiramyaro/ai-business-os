@@ -7,12 +7,14 @@ import {
   ExpenseListItem,
   GetToken,
   Product,
+  ProductUpdateInput,
   SaleListItem,
   createStockAdjustment,
   declareProductUnit,
   listExpenses,
   listProducts,
   listSales,
+  updateProduct,
 } from "@/lib/api";
 import { BusinessPicker } from "@/components/BusinessPicker";
 import { Badge } from "@/components/ui/Badge";
@@ -86,7 +88,7 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
   const [products, setProducts] = useState<Product[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [openProductId, setOpenProductId] = useState<string | null>(null);
+  const [openPanel, setOpenPanel] = useState<{ productId: string; mode: "adjust" | "edit" } | null>(null);
   // Adjust state during render rather than an effect (same pattern
   // NavBar.tsx uses for pathname changes) -- avoids the cascading-render
   // an effect that calls setState synchronously would trigger.
@@ -116,7 +118,12 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
       prev?.map((p) => (p.id === productId ? { ...p, quantity: currentStock, lowStock: p.reorderLevel !== null && currentStock <= p.reorderLevel } : p)) ??
         null
     );
-    setOpenProductId(null);
+    setOpenPanel(null);
+  }
+
+  function handleEdited(updated: Product) {
+    setProducts((prev) => prev?.map((p) => (p.id === updated.id ? updated : p)) ?? null);
+    setOpenPanel(null);
   }
 
   return (
@@ -160,16 +167,44 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
                 {product.sellingPrice !== null && ` · sells ${money(product.sellingPrice)}`}
               </p>
             </div>
-            <Button
-              variant="secondary"
-              className="shrink-0"
-              onClick={() => setOpenProductId(openProductId === product.id ? null : product.id)}
-            >
-              {openProductId === product.id ? "Cancel" : "Adjust"}
-            </Button>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  setOpenPanel(
+                    openPanel?.productId === product.id && openPanel.mode === "edit"
+                      ? null
+                      : { productId: product.id, mode: "edit" }
+                  )
+                }
+              >
+                {openPanel?.productId === product.id && openPanel.mode === "edit" ? "Cancel" : "Edit"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  setOpenPanel(
+                    openPanel?.productId === product.id && openPanel.mode === "adjust"
+                      ? null
+                      : { productId: product.id, mode: "adjust" }
+                  )
+                }
+              >
+                {openPanel?.productId === product.id && openPanel.mode === "adjust" ? "Cancel" : "Adjust"}
+              </Button>
+            </div>
           </div>
 
-          {openProductId === product.id && (
+          {openPanel?.productId === product.id && openPanel.mode === "edit" && (
+            <EditForm
+              getToken={getToken}
+              businessId={businessId}
+              product={product}
+              onEdited={handleEdited}
+            />
+          )}
+
+          {openPanel?.productId === product.id && openPanel.mode === "adjust" && (
             <AdjustForm
               getToken={getToken}
               businessId={businessId}
@@ -180,6 +215,102 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
         </Card>
       ))}
     </div>
+  );
+}
+
+function EditForm({
+  getToken,
+  businessId,
+  product,
+  onEdited,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  product: Product;
+  onEdited: (updated: Product) => void;
+}) {
+  const [sku, setSku] = useState(product.sku ?? "");
+  const [category, setCategory] = useState(product.category ?? "");
+  const [baseUnit, setBaseUnit] = useState(product.baseUnit);
+  const [reorderLevel, setReorderLevel] = useState(product.reorderLevel?.toString() ?? "");
+  const [costPrice, setCostPrice] = useState(product.costPrice ?? "");
+  const [sellingPrice, setSellingPrice] = useState(product.sellingPrice ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const update: ProductUpdateInput = {
+        sku: sku || undefined,
+        category: category || undefined,
+        baseUnit: baseUnit || undefined,
+        reorderLevel: reorderLevel === "" ? undefined : Number(reorderLevel),
+        costPrice: costPrice || undefined,
+        sellingPrice: sellingPrice || undefined,
+      };
+      const updated = await updateProduct(getToken, businessId, product.id, update);
+      onEdited(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save changes");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3 border-t border-border pt-3">
+      {error && <p className="text-sm text-danger-fg">{error}</p>}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="SKU">
+          <Input placeholder="e.g. RICE-5KG" value={sku} onChange={(e) => setSku(e.target.value)} />
+        </Field>
+        <Field label="Category">
+          <Input placeholder="e.g. Grains" value={category} onChange={(e) => setCategory(e.target.value)} />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Unit">
+          <Input placeholder="e.g. piece" value={baseUnit} onChange={(e) => setBaseUnit(e.target.value)} required />
+        </Field>
+        <Field label="Reorder level">
+          <Input
+            type="number"
+            inputMode="numeric"
+            min="0"
+            value={reorderLevel}
+            onChange={(e) => setReorderLevel(e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Cost price">
+          <Input
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            min="0"
+            value={costPrice}
+            onChange={(e) => setCostPrice(e.target.value)}
+          />
+        </Field>
+        <Field label="Selling price">
+          <Input
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            min="0"
+            value={sellingPrice}
+            onChange={(e) => setSellingPrice(e.target.value)}
+          />
+        </Field>
+      </div>
+      <Button type="submit" disabled={submitting}>
+        {submitting ? "Saving…" : "Save details"}
+      </Button>
+    </form>
   );
 }
 
