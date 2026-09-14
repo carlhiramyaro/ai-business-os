@@ -46,17 +46,6 @@ def _parse_str(arguments: dict, field: str, required: bool = False) -> str | Non
     return str(value).strip()
 
 
-def _parse_int(arguments: dict, field: str, required: bool = False) -> int | None:
-    value = arguments.get(field)
-    if value is None:
-        if required:
-            raise ToolArgumentError(f"{field} is required")
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ToolArgumentError(f"{field} must be an integer, got: {value!r}")
-    return value
-
-
 def _parse_decimal(arguments: dict, field: str, required: bool = False) -> Decimal | None:
     value = arguments.get(field)
     if value is None:
@@ -95,7 +84,10 @@ def _stage_pending_entry(db: Session, business_id: uuid.UUID, dataset_type: str,
 def propose_sale_entry(db: Session, business_id: uuid.UUID, arguments: dict, today: date_type | None = None) -> dict:
     today = today or date_type.today()
     product_name = _parse_str(arguments, "product_name", required=True)
-    quantity = _parse_int(arguments, "quantity", required=True)
+    # Decimal, not int: a loose product sold by weight (2.3 kg) needs a
+    # fractional quantity, same as every other write path. See
+    # docs/decisions.md [2026-09-14].
+    quantity = _parse_decimal(arguments, "quantity", required=True)
     unit_price = _parse_decimal(arguments, "unit_price")
     discount = _parse_decimal(arguments, "discount")
     total_amount = _parse_decimal(arguments, "total_amount")
@@ -107,7 +99,7 @@ def propose_sale_entry(db: Session, business_id: uuid.UUID, arguments: dict, tod
         "sale_date": sale_date.isoformat(),
         "product_name": product_name,
         "category": _parse_str(arguments, "category"),
-        "quantity": quantity,
+        "quantity": str(quantity),
         "unit_price": str(unit_price) if unit_price is not None else None,
         "discount": str(discount) if discount is not None else None,
         "total_amount": str(total_amount) if total_amount is not None else None,
@@ -158,13 +150,13 @@ def _decimal_str(arguments: dict, field: str) -> str | None:
 
 def propose_inventory_entry(db: Session, business_id: uuid.UUID, arguments: dict) -> dict:
     product_name = _parse_str(arguments, "product_name", required=True)
-    quantity = _parse_int(arguments, "quantity", required=True)
+    quantity = _parse_decimal(arguments, "quantity", required=True)
 
     fields = {
         "product_name": product_name,
         "category": _parse_str(arguments, "category"),
-        "quantity": quantity,
-        "reorder_level": _parse_int(arguments, "reorder_level"),
+        "quantity": str(quantity),
+        "reorder_level": _decimal_str(arguments, "reorder_level"),
         "supplier": _parse_str(arguments, "supplier"),
         "cost_price": _decimal_str(arguments, "cost_price"),
         "selling_price": _decimal_str(arguments, "selling_price"),

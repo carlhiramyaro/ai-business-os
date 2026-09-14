@@ -7,13 +7,11 @@ import {
   DocumentStatus,
   GetToken,
   Product,
-  ProductUnit,
   confirmDocument,
   createExpenseEntry,
   createInventoryEntry,
   createSaleEntry,
   getDocumentStatus,
-  listProductUnits,
   listProducts,
   updateDocumentRows,
   uploadDocument,
@@ -195,73 +193,6 @@ function ProductPicker({
   );
 }
 
-// Product name + unit, paired: which units are choosable depends on
-// whether `productName` matches an EXISTING product (its own base unit
-// plus whatever it's declared via app/routers/products.py's units
-// endpoint) or looks like a brand-new one (free-text unit, since there's
-// nothing declared yet to pick from -- it becomes that product's base
-// unit at creation). See docs/decisions.md [2026-09-14].
-function ProductAndUnitFields({
-  getToken,
-  businessId,
-  products,
-  productName,
-  onProductNameChange,
-  unitName,
-  onUnitNameChange,
-}: {
-  getToken: GetToken;
-  businessId: string;
-  products: Product[];
-  productName: string;
-  onProductNameChange: (name: string) => void;
-  unitName: string;
-  onUnitNameChange: (unit: string) => void;
-}) {
-  const matchedProduct =
-    products.find((p) => p.name.toLowerCase() === productName.trim().toLowerCase()) ?? null;
-  const [productUnits, setProductUnits] = useState<ProductUnit[]>([]);
-  const [unitsLoadedFor, setUnitsLoadedFor] = useState<string | null>(null);
-
-  const matchedId = matchedProduct?.id ?? null;
-  if (unitsLoadedFor !== matchedId) {
-    setUnitsLoadedFor(matchedId);
-    if (matchedId) {
-      listProductUnits(getToken, businessId, matchedId)
-        .then(setProductUnits)
-        .catch(() => setProductUnits([]));
-    } else {
-      setProductUnits([]);
-    }
-  }
-
-  return (
-    <>
-      <Field label="Product">
-        <ProductPicker products={products} value={productName} onChange={onProductNameChange} />
-      </Field>
-      <Field label={matchedProduct ? "Unit" : "Unit (optional)"}>
-        {matchedProduct ? (
-          <Select value={unitName || matchedProduct.baseUnit} onChange={(e) => onUnitNameChange(e.target.value)}>
-            <option value={matchedProduct.baseUnit}>{matchedProduct.baseUnit}</option>
-            {productUnits.map((u) => (
-              <option key={u.id} value={u.unitName}>
-                {u.unitName}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <Input
-            placeholder="e.g. piece, bag, carton"
-            value={unitName}
-            onChange={(e) => onUnitNameChange(e.target.value)}
-          />
-        )}
-      </Field>
-    </>
-  );
-}
-
 function SaleForm({
   getToken,
   businessId,
@@ -275,7 +206,6 @@ function SaleForm({
 }) {
   const [saleDate, setSaleDate] = useState(todayIso());
   const [productName, setProductName] = useState("");
-  const [unitName, setUnitName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unitPrice, setUnitPrice] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -285,7 +215,6 @@ function SaleForm({
 
   function reset() {
     setProductName("");
-    setUnitName("");
     setQuantity("");
     setUnitPrice("");
     setCustomerName("");
@@ -304,7 +233,6 @@ function SaleForm({
         quantity: Number(quantity),
         unitPrice: unitPrice || undefined,
         customerName: customerName || undefined,
-        unitName: unitName || undefined,
       });
       setResult({ duplicateWarning: created.duplicateWarning });
       onSaved();
@@ -324,21 +252,16 @@ function SaleForm({
         <Field label="Date">
           <Input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} required />
         </Field>
-        <ProductAndUnitFields
-          getToken={getToken}
-          businessId={businessId}
-          products={products}
-          productName={productName}
-          onProductNameChange={setProductName}
-          unitName={unitName}
-          onUnitNameChange={setUnitName}
-        />
+        <Field label="Product">
+          <ProductPicker products={products} value={productName} onChange={setProductName} />
+        </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Quantity">
             <Input
               type="number"
-              inputMode="numeric"
-              min="1"
+              inputMode="decimal"
+              step="any"
+              min="0"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               required
@@ -454,7 +377,6 @@ function InventoryForm({
   onSaved: () => void;
 }) {
   const [productName, setProductName] = useState("");
-  const [unitName, setUnitName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [supplier, setSupplier] = useState("");
   const [costPrice, setCostPrice] = useState("");
@@ -464,7 +386,6 @@ function InventoryForm({
 
   function reset() {
     setProductName("");
-    setUnitName("");
     setQuantity("");
     setSupplier("");
     setCostPrice("");
@@ -482,7 +403,6 @@ function InventoryForm({
         quantity: Number(quantity),
         supplier: supplier || undefined,
         costPrice: costPrice || undefined,
-        unitName: unitName || undefined,
       });
       setResult({ duplicateWarning: created.duplicateWarning });
       onSaved();
@@ -499,19 +419,14 @@ function InventoryForm({
     <Card>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         {error && <p className="text-sm text-danger-fg">{error}</p>}
-        <ProductAndUnitFields
-          getToken={getToken}
-          businessId={businessId}
-          products={products}
-          productName={productName}
-          onProductNameChange={setProductName}
-          unitName={unitName}
-          onUnitNameChange={setUnitName}
-        />
+        <Field label="Product">
+          <ProductPicker products={products} value={productName} onChange={setProductName} />
+        </Field>
         <Field label="Quantity (the actual count, not an addition)">
           <Input
             type="number"
-            inputMode="numeric"
+            inputMode="decimal"
+            step="any"
             min="0"
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}

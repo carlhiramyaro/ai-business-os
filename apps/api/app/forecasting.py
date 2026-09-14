@@ -80,7 +80,11 @@ def forecast_stock_depletion(
         items.append(
             {
                 "productName": product_name,
-                "quantity": item["quantity"],
+                # float, not the raw Decimal item["quantity"] -- this feeds
+                # both report metrics and the manager agent's prompt via
+                # json.dumps, which can't serialize Decimal. See
+                # docs/decisions.md [2026-09-14].
+                "quantity": quantity,
                 "dailyVelocity": round(velocity, 2),
                 "daysToStockout": days_to_stockout,
             }

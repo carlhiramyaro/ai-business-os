@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -50,10 +50,7 @@ def create_sale_entry(
         row["total_amount"] = compute_sale_total(row["quantity"], row["unit_price"], row["discount"])
 
     session = _create_manual_session(db, business)
-    try:
-        summary = ingest_rows(db, business.id, session.id, "sales", [row])
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    summary = ingest_rows(db, business.id, session.id, "sales", [row])
     db.commit()
 
     return EntryCreateResponse(id=summary.created_ids[0], duplicate_warning=summary.duplicate_count > 0)
@@ -79,10 +76,7 @@ def create_inventory_entry(
     db: Session = Depends(get_db),
 ):
     session = _create_manual_session(db, business)
-    try:
-        summary = ingest_rows(db, business.id, session.id, "inventory", [payload.model_dump()])
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    summary = ingest_rows(db, business.id, session.id, "inventory", [payload.model_dump()])
     db.commit()
 
     return EntryCreateResponse(id=summary.created_ids[0], duplicate_warning=summary.duplicate_count > 0)

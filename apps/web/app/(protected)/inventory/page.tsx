@@ -6,11 +6,14 @@ import {
   AdjustmentReason,
   ExpenseListItem,
   GetToken,
+  PackRelationship,
   Product,
   ProductUpdateInput,
   SaleListItem,
+  createRepack,
   createStockAdjustment,
-  declareProductUnit,
+  declarePackRelationship,
+  getPackRelationship,
   getSuggestedSku,
   listExpenses,
   listProducts,
@@ -36,6 +39,15 @@ function money(value: string | null) {
   if (value === null) return "—";
   const n = Number(value);
   return Number.isFinite(n) ? n.toFixed(2) : value;
+}
+
+// Quantities arrive as exact Decimal strings (possibly with trailing
+// zeros, e.g. "5.0000000000") -- trims those for display without forcing
+// a fixed number of decimal places the way money() does, since "5" should
+// read as "5", not "5.00".
+function qty(value: string) {
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : value;
 }
 
 export default function InventoryPage() {
@@ -89,7 +101,7 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
   const [products, setProducts] = useState<Product[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [openPanel, setOpenPanel] = useState<{ productId: string; mode: "adjust" | "edit" } | null>(null);
+  const [openPanel, setOpenPanel] = useState<{ productId: string; mode: "adjust" | "edit" | "pack" } | null>(null);
   // Adjust state during render rather than an effect (same pattern
   // NavBar.tsx uses for pathname changes) -- avoids the cascading-render
   // an effect that calls setState synchronously would trigger.
@@ -114,16 +126,12 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
     return p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q);
   });
 
-  function handleAdjusted(productId: string, currentStock: number) {
-    setProducts((prev) =>
-      prev?.map((p) => (p.id === productId ? { ...p, quantity: currentStock, lowStock: p.reorderLevel !== null && currentStock <= p.reorderLevel } : p)) ??
-        null
-    );
-    setOpenPanel(null);
-  }
-
-  function handleEdited(updated: Product) {
-    setProducts((prev) => prev?.map((p) => (p.id === updated.id ? updated : p)) ?? null);
+  // Adjust/Edit/Pack all just trigger a full refetch on success rather
+  // than hand-patching state -- a repack changes TWO products' stock at
+  // once, which a local patch can't express cleanly, so every panel uses
+  // the same simple "refresh and close" completion.
+  function handleChanged() {
+    refresh();
     setOpenPanel(null);
   }
 
@@ -152,69 +160,61 @@ function InventoryTab({ getToken, businessId }: { getToken: GetToken; businessId
         </Card>
       )}
 
-      {filtered.map((product) => (
-        <Card key={product.id} className="flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="font-medium text-foreground">{product.name}</p>
-                {product.sku && <Badge tone="neutral">{product.sku}</Badge>}
-                {product.lowStock && <Badge tone="warning">Low stock</Badge>}
+      {filtered.map((product) => {
+        const panelMode = openPanel?.productId === product.id ? openPanel.mode : null;
+        function togglePanel(mode: "adjust" | "edit" | "pack") {
+          setOpenPanel(panelMode === mode ? null : { productId: product.id, mode });
+        }
+
+        return (
+          <Card key={product.id} className="flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-foreground">{product.name}</p>
+                  {product.sku && <Badge tone="neutral">{product.sku}</Badge>}
+                  {product.lowStock && <Badge tone="warning">Low stock</Badge>}
+                </div>
+                <p className="text-sm text-muted">
+                  {qty(product.quantity)} {product.baseUnit}
+                  {product.reorderLevel !== null && ` · reorder at ${qty(product.reorderLevel)}`}
+                  {product.costPrice !== null && ` · cost ${money(product.costPrice)}`}
+                  {product.sellingPrice !== null && ` · sells ${money(product.sellingPrice)}`}
+                </p>
               </div>
-              <p className="text-sm text-muted">
-                {product.quantity} {product.baseUnit}
-                {product.reorderLevel !== null && ` · reorder at ${product.reorderLevel}`}
-                {product.costPrice !== null && ` · cost ${money(product.costPrice)}`}
-                {product.sellingPrice !== null && ` · sells ${money(product.sellingPrice)}`}
-              </p>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                <Button variant="secondary" onClick={() => togglePanel("edit")}>
+                  {panelMode === "edit" ? "Cancel" : "Edit"}
+                </Button>
+                <Button variant="secondary" onClick={() => togglePanel("pack")}>
+                  {panelMode === "pack" ? "Cancel" : "Pack"}
+                </Button>
+                <Button variant="secondary" onClick={() => togglePanel("adjust")}>
+                  {panelMode === "adjust" ? "Cancel" : "Adjust"}
+                </Button>
+              </div>
             </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  setOpenPanel(
-                    openPanel?.productId === product.id && openPanel.mode === "edit"
-                      ? null
-                      : { productId: product.id, mode: "edit" }
-                  )
-                }
-              >
-                {openPanel?.productId === product.id && openPanel.mode === "edit" ? "Cancel" : "Edit"}
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  setOpenPanel(
-                    openPanel?.productId === product.id && openPanel.mode === "adjust"
-                      ? null
-                      : { productId: product.id, mode: "adjust" }
-                  )
-                }
-              >
-                {openPanel?.productId === product.id && openPanel.mode === "adjust" ? "Cancel" : "Adjust"}
-              </Button>
-            </div>
-          </div>
 
-          {openPanel?.productId === product.id && openPanel.mode === "edit" && (
-            <EditForm
-              getToken={getToken}
-              businessId={businessId}
-              product={product}
-              onEdited={handleEdited}
-            />
-          )}
+            {panelMode === "edit" && (
+              <EditForm getToken={getToken} businessId={businessId} product={product} onChanged={handleChanged} />
+            )}
 
-          {openPanel?.productId === product.id && openPanel.mode === "adjust" && (
-            <AdjustForm
-              getToken={getToken}
-              businessId={businessId}
-              product={product}
-              onAdjusted={(currentStock) => handleAdjusted(product.id, currentStock)}
-            />
-          )}
-        </Card>
-      ))}
+            {panelMode === "pack" && (
+              <PackForm
+                getToken={getToken}
+                businessId={businessId}
+                products={products ?? []}
+                product={product}
+                onChanged={handleChanged}
+              />
+            )}
+
+            {panelMode === "adjust" && (
+              <AdjustForm getToken={getToken} businessId={businessId} product={product} onChanged={handleChanged} />
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -223,17 +223,17 @@ function EditForm({
   getToken,
   businessId,
   product,
-  onEdited,
+  onChanged,
 }: {
   getToken: GetToken;
   businessId: string;
   product: Product;
-  onEdited: (updated: Product) => void;
+  onChanged: () => void;
 }) {
   const [sku, setSku] = useState(product.sku ?? "");
   const [category, setCategory] = useState(product.category ?? "");
   const [baseUnit, setBaseUnit] = useState(product.baseUnit);
-  const [reorderLevel, setReorderLevel] = useState(product.reorderLevel?.toString() ?? "");
+  const [reorderLevel, setReorderLevel] = useState(product.reorderLevel ?? "");
   const [costPrice, setCostPrice] = useState(product.costPrice ?? "");
   const [sellingPrice, setSellingPrice] = useState(product.sellingPrice ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -262,12 +262,12 @@ function EditForm({
         sku: sku || undefined,
         category: category || undefined,
         baseUnit: baseUnit || undefined,
-        reorderLevel: reorderLevel === "" ? undefined : Number(reorderLevel),
+        reorderLevel: reorderLevel === "" ? undefined : reorderLevel,
         costPrice: costPrice || undefined,
         sellingPrice: sellingPrice || undefined,
       };
-      const updated = await updateProduct(getToken, businessId, product.id, update);
-      onEdited(updated);
+      await updateProduct(getToken, businessId, product.id, update);
+      onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save changes");
     } finally {
@@ -305,7 +305,8 @@ function EditForm({
         <Field label="Reorder level">
           <Input
             type="number"
-            inputMode="numeric"
+            inputMode="decimal"
+            step="any"
             min="0"
             value={reorderLevel}
             onChange={(e) => setReorderLevel(e.target.value)}
@@ -352,22 +353,18 @@ function AdjustForm({
   getToken,
   businessId,
   product,
-  onAdjusted,
+  onChanged,
 }: {
   getToken: GetToken;
   businessId: string;
   product: Product;
-  onAdjusted: (currentStock: number) => void;
+  onChanged: () => void;
 }) {
   const [reason, setReason] = useState<AdjustmentReason>("restock");
   const [quantity, setQuantity] = useState("");
-  const [unitName, setUnitName] = useState("");
-  const [conversionToBase, setConversionToBase] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const usingOtherUnit = unitName.trim().length > 0;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -375,24 +372,12 @@ function AdjustForm({
     setError(null);
     setSubmitting(true);
     try {
-      if (usingOtherUnit) {
-        if (!conversionToBase) {
-          setError(`How many ${product.baseUnit} is one "${unitName}"?`);
-          setSubmitting(false);
-          return;
-        }
-        await declareProductUnit(getToken, businessId, product.id, {
-          unitName: unitName.trim(),
-          conversionToBase,
-        });
-      }
-      const result = await createStockAdjustment(getToken, businessId, product.id, {
+      await createStockAdjustment(getToken, businessId, product.id, {
         reason,
-        quantity: Number(quantity),
-        unitName: usingOtherUnit ? unitName.trim() : undefined,
+        quantity,
         note: note || undefined,
       });
-      onAdjusted(result.currentStock);
+      onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save adjustment");
     } finally {
@@ -413,10 +398,11 @@ function AdjustForm({
             ))}
           </Select>
         </Field>
-        <Field label={reason === "recount" ? "New count" : "Quantity"}>
+        <Field label={reason === "recount" ? `New count (${product.baseUnit})` : `Quantity (${product.baseUnit})`}>
           <Input
             type="number"
-            inputMode="numeric"
+            inputMode="decimal"
+            step="any"
             min="0"
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
@@ -424,28 +410,217 @@ function AdjustForm({
           />
         </Field>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label={`Unit (optional, default ${product.baseUnit})`}>
-          <Input placeholder="e.g. carton" value={unitName} onChange={(e) => setUnitName(e.target.value)} />
-        </Field>
-        {usingOtherUnit && (
-          <Field label={`= how many ${product.baseUnit}?`}>
-            <Input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              value={conversionToBase}
-              onChange={(e) => setConversionToBase(e.target.value)}
-              required
-            />
-          </Field>
-        )}
-      </div>
       <Field label="Note (optional)">
         <Input placeholder="e.g. supplier delivery" value={note} onChange={(e) => setNote(e.target.value)} />
       </Field>
       <Button type="submit" disabled={submitting || !quantity}>
         {submitting ? "Saving…" : "Save adjustment"}
+      </Button>
+    </form>
+  );
+}
+
+// Pack relationships (docs/decisions.md [2026-09-14]) -- "1 Coke Case = 24
+// Coke Can" as an explicit link between two independent products, plus the
+// "break"/"assemble" repack action that converts between them. Replaces an
+// earlier per-transaction unit conversion that turned out to be a
+// confusing setup flow disconnected from the sale/restock it served.
+function PackForm({
+  getToken,
+  businessId,
+  products,
+  product,
+  onChanged,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  products: Product[];
+  product: Product;
+  onChanged: () => void;
+}) {
+  // undefined = still loading; null = loaded, no relationship declared yet.
+  const [relationship, setRelationship] = useState<PackRelationship | null | undefined>(undefined);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (loadedFor !== product.id) {
+    setLoadedFor(product.id);
+    getPackRelationship(getToken, businessId, product.id)
+      .then(setRelationship)
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Could not load pack info");
+        setRelationship(null);
+      });
+  }
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-border pt-3">
+      {error && <p className="text-sm text-danger-fg">{error}</p>}
+      {relationship === undefined ? (
+        <p className="text-sm text-muted">Loading…</p>
+      ) : relationship ? (
+        <RepackForm
+          getToken={getToken}
+          businessId={businessId}
+          product={product}
+          relationship={relationship}
+          onChanged={onChanged}
+        />
+      ) : (
+        <DeclarePackForm
+          getToken={getToken}
+          businessId={businessId}
+          products={products}
+          product={product}
+          onDeclared={setRelationship}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeclarePackForm({
+  getToken,
+  businessId,
+  products,
+  product,
+  onDeclared,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  products: Product[];
+  product: Product;
+  onDeclared: (relationship: PackRelationship) => void;
+}) {
+  const otherProducts = products.filter((p) => p.id !== product.id);
+  const [unitProductId, setUnitProductId] = useState(otherProducts[0]?.id ?? "");
+  const [unitsPerPack, setUnitsPerPack] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!unitProductId || !unitsPerPack) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const relationship = await declarePackRelationship(getToken, businessId, product.id, {
+        unitProductId,
+        unitsPerPack,
+      });
+      onDeclared(relationship);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not link products");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (otherProducts.length === 0) {
+    return <p className="text-sm text-muted">Add another product first, then come back to link them.</p>;
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+      <p className="text-sm text-muted">
+        Is <span className="font-medium text-foreground">{product.name}</span> a sealed pack of another product —
+        e.g. a case of cans? Link them once, then use &ldquo;Break a case&rdquo; whenever you open one, instead of
+        converting units on every sale.
+      </p>
+      {error && <p className="text-sm text-danger-fg">{error}</p>}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Contains">
+          <Select value={unitProductId} onChange={(e) => setUnitProductId(e.target.value)}>
+            {otherProducts.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label={`How many per ${product.name}?`}>
+          <Input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min="0"
+            value={unitsPerPack}
+            onChange={(e) => setUnitsPerPack(e.target.value)}
+            required
+          />
+        </Field>
+      </div>
+      <Button type="submit" disabled={submitting}>
+        {submitting ? "Linking…" : "Link products"}
+      </Button>
+    </form>
+  );
+}
+
+function RepackForm({
+  getToken,
+  businessId,
+  product,
+  relationship,
+  onChanged,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  product: Product;
+  relationship: PackRelationship;
+  onChanged: () => void;
+}) {
+  const [direction, setDirection] = useState<"break" | "assemble">("break");
+  const [quantity, setQuantity] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!quantity) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await createRepack(getToken, businessId, product.id, { quantity, direction, note: note || undefined });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+      <p className="text-sm text-muted">
+        Linked: 1 {product.name} = {qty(relationship.unitsPerPack)} {relationship.unitProductName}
+      </p>
+      {error && <p className="text-sm text-danger-fg">{error}</p>}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Action">
+          <Select value={direction} onChange={(e) => setDirection(e.target.value as "break" | "assemble")}>
+            <option value="break">Break {product.name} → {relationship.unitProductName}</option>
+            <option value="assemble">Assemble {relationship.unitProductName} → {product.name}</option>
+          </Select>
+        </Field>
+        <Field label={direction === "break" ? `How many ${product.name}?` : `How many ${product.name} to make?`}>
+          <Input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min="0"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            required
+          />
+        </Field>
+      </div>
+      <Field label="Note (optional)">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} />
+      </Field>
+      <Button type="submit" disabled={submitting || !quantity}>
+        {submitting ? "Saving…" : "Save"}
       </Button>
     </form>
   );

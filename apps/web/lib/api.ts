@@ -356,9 +356,6 @@ export interface SaleEntryInput {
   customerName?: string;
   customerPhone?: string;
   paymentMethod?: string;
-  // Unit `quantity` is stated in -- e.g. "12-pack" against a product
-  // tracked in "can". Omit to mean "already in the product's base unit".
-  unitName?: string;
 }
 
 export async function createSaleEntry(getToken: GetToken, businessId: string, entry: SaleEntryInput) {
@@ -393,9 +390,6 @@ export interface InventoryEntryInput {
   supplier?: string;
   costPrice?: string;
   sellingPrice?: string;
-  // Same meaning as SaleEntryInput.unitName. For a brand-new product this
-  // BECOMES its base unit (nothing to convert against yet).
-  unitName?: string;
 }
 
 export async function createInventoryEntry(getToken: GetToken, businessId: string, entry: InventoryEntryInput) {
@@ -630,9 +624,12 @@ export interface Product {
   name: string;
   sku: string | null;
   category: string | null;
-  quantity: number;
+  // Decimal on the backend (a loose product sold by weight needs a
+  // fractional running stock), so it arrives as a string, same as
+  // costPrice/sellingPrice below -- see docs/decisions.md [2026-09-14].
+  quantity: string;
   baseUnit: string;
-  reorderLevel: number | null;
+  reorderLevel: string | null;
   costPrice: string | null;
   sellingPrice: string | null;
   lowStock: boolean;
@@ -648,7 +645,7 @@ export interface ProductUpdateInput {
   sku?: string;
   category?: string;
   baseUnit?: string;
-  reorderLevel?: number;
+  reorderLevel?: string | number;
   costPrice?: string;
   sellingPrice?: string;
 }
@@ -676,16 +673,16 @@ export type AdjustmentReason = "restock" | "recount" | "loss" | "damage";
 export interface StockAdjustmentResponse {
   id: string;
   productId: string;
-  quantityDelta: number;
+  quantityDelta: string;
   reason: string;
-  currentStock: number;
+  currentStock: string;
 }
 
 export async function createStockAdjustment(
   getToken: GetToken,
   businessId: string,
   productId: string,
-  adjustment: { reason: AdjustmentReason; quantity: number; unitName?: string; note?: string }
+  adjustment: { reason: AdjustmentReason; quantity: string | number; note?: string }
 ) {
   return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/stock-movements`, {
     method: "POST",
@@ -694,30 +691,57 @@ export async function createStockAdjustment(
   }).then((response) => parseJsonOrThrow<StockAdjustmentResponse>(response));
 }
 
-export interface ProductUnit {
+// Pack relationships (docs/decisions.md [2026-09-14]) -- "1 Coke Case = 24
+// Coke Can" as an explicit link between two independent products, plus the
+// "break"/"assemble" repack action that converts between them. Replaces an
+// earlier per-transaction unit conversion (ProductUnit) that turned out to
+// be a confusing setup flow disconnected from the sale/restock it served.
+
+export interface PackRelationship {
   id: string;
-  unitName: string;
-  conversionToBase: string;
-  createdAt: string;
+  packProductId: string;
+  unitProductId: string;
+  unitProductName: string;
+  unitsPerPack: string;
 }
 
-export async function listProductUnits(getToken: GetToken, businessId: string, productId: string) {
-  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/units`, {
+export async function getPackRelationship(getToken: GetToken, businessId: string, productId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/pack-relationship`, {
     headers: await authHeaders(getToken),
-  }).then((response) => parseJsonOrThrow<ProductUnit[]>(response));
+  }).then((response) => parseJsonOrThrow<PackRelationship | null>(response));
 }
 
-export async function declareProductUnit(
+export async function declarePackRelationship(
   getToken: GetToken,
   businessId: string,
   productId: string,
-  unit: { unitName: string; conversionToBase: string | number }
+  relationship: { unitProductId: string; unitsPerPack: string | number }
 ) {
-  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/units`, {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/pack-relationship`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
-    body: JSON.stringify(unit),
-  }).then((response) => parseJsonOrThrow<ProductUnit>(response));
+    body: JSON.stringify(relationship),
+  }).then((response) => parseJsonOrThrow<PackRelationship>(response));
+}
+
+export interface RepackResponse {
+  packProductId: string;
+  packCurrentStock: string;
+  unitProductId: string;
+  unitCurrentStock: string;
+}
+
+export async function createRepack(
+  getToken: GetToken,
+  businessId: string,
+  productId: string,
+  repack: { quantity: string | number; direction: "break" | "assemble"; note?: string }
+) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/repack`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
+    body: JSON.stringify(repack),
+  }).then((response) => parseJsonOrThrow<RepackResponse>(response));
 }
 
 export interface SaleListItem {

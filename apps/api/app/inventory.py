@@ -3,67 +3,48 @@
 Current stock is never a stored, mutable number -- it's derived by summing
 StockMovement.quantity_delta for a product, the way a bank balance is
 derived from its transactions. Every write here is deterministic
-arithmetic (unit conversion, sign-by-reason, recount-to-delta), never an
-LLM guess -- same deterministic-vs-LLM rule SaleEntry.totalAmount already
-follows in app/schemas/entries.py.
+arithmetic (sign-by-reason, recount-to-delta, repack), never an LLM guess
+-- same deterministic-vs-LLM rule SaleEntry.totalAmount already follows in
+app/schemas/entries.py.
+
+Quantities are Decimal, not int: one shared column across every product,
+and some (loose meat/produce/fuel sold by weight or volume) are legitimately
+fractional -- see docs/decisions.md [2026-09-14].
 
 This module is the ledger boundary; it does not resolve products (see
 app/entities.py's resolve_product) or decide WHEN a movement should be
-written -- that's the next v0.7 slice, which wires ingest_rows/data_entry
-write paths to call in here the way they already call ingest_rows.
+written -- that's app/ingestion.py's job for sales/inventory rows.
 """
 
 import uuid
+from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Product, ProductUnit, StockMovement
+from app.models import PackRelationship, Product, StockMovement
 
 # Reasons whose direction is intrinsic to their meaning: a sale always
-# decreases stock, a restock always increases it, and so on. "recount" is
-# deliberately absent -- it asserts an absolute new count, not a delta, so
-# it can't be sign-inferred the same way (see record_recount).
+# decreases stock, a restock always increases it, and so on. "recount" and
+# "repack" are deliberately absent -- neither is sign-inferable from the
+# reason alone (see record_recount, record_repack).
 _SIGN_BY_REASON = {"sale": -1, "restock": 1, "loss": -1, "damage": -1}
 
-REASONS = (*_SIGN_BY_REASON.keys(), "recount")
+REASONS = (*_SIGN_BY_REASON.keys(), "recount", "repack")
 
 
-def to_base_quantity(db: Session, product: Product, quantity, unit_name: str | None) -> int:
-    """Converts `quantity` in `unit_name` into a whole number of the
-    product's base_unit, via that product's declared ProductUnit rows.
-    `unit_name=None` (or a value equal to the product's own base_unit)
-    means `quantity` is already in base units.
-
-    Rounds to the nearest whole base unit: a fractional conversion factor
-    is legitimate (e.g. a "half-carton" unit), a fractional stock count is
-    not, and inventory here is always counted in whole units -- same
-    posture as Sale.quantity/Inventory.quantity both being Integer. Uses
-    Python's round() (round-half-to-even, e.g. round(12.5) == 12) rather
-    than round-half-up -- a deliberate default, not an oversight, since a
-    fractional conversion factor landing exactly on .5 is a rare input.
-    """
-    if unit_name is None or unit_name == product.base_unit:
-        return round(quantity)
-
-    product_unit = (
-        db.query(ProductUnit)
-        .filter(ProductUnit.product_id == product.id, ProductUnit.unit_name == unit_name)
-        .one_or_none()
-    )
-    if product_unit is None:
-        raise ValueError(f"product {product.id} has no declared unit {unit_name!r}")
-
-    return round(float(quantity) * float(product_unit.conversion_to_base))
-
-
-def get_current_stock(db: Session, product_id: uuid.UUID) -> int:
+def get_current_stock(db: Session, product_id: uuid.UUID) -> Decimal:
     total = (
         db.query(func.coalesce(func.sum(StockMovement.quantity_delta), 0))
         .filter(StockMovement.product_id == product_id)
         .scalar()
     )
-    return int(total)
+    return Decimal(total)
+
+
+def get_pack_relationship(db: Session, pack_product_id: uuid.UUID) -> PackRelationship | None:
+    return db.query(PackRelationship).filter(PackRelationship.pack_product_id == pack_product_id).one_or_none()
 
 
 def list_current_stock(db: Session, business_id: uuid.UUID) -> list[dict]:
@@ -92,7 +73,7 @@ def list_current_stock(db: Session, business_id: uuid.UUID) -> list[dict]:
             "productName": product.name,
             "sku": product.sku,
             "category": product.category,
-            "quantity": int(quantity),
+            "quantity": Decimal(quantity),
             "baseUnit": product.base_unit,
             "reorderLevel": product.reorder_level,
             "costPrice": product.cost_price,
@@ -109,28 +90,27 @@ def record_stock_movement(
     quantity,
     *,
     reason: str,
-    unit_name: str | None = None,
     source_type: str | None = None,
     source_id=None,
     note: str | None = None,
 ) -> StockMovement:
-    """Appends one signed movement to the ledger. `quantity` is a positive
-    count in `unit_name` (the product's base_unit if omitted) -- direction
-    is derived from `reason`, not asked of the caller, so a producer can't
-    accidentally restock by passing a negative sale quantity.
+    """Appends one signed movement to the ledger, in the product's own
+    base_unit -- direction is derived from `reason`, not asked of the
+    caller, so a producer can't accidentally restock by passing a negative
+    sale quantity.
 
-    Not valid for reason="recount" (an absolute assertion, not a delta):
-    use record_recount for that.
+    Not valid for reason="recount" (an absolute assertion, not a delta) or
+    "repack" (a paired movement against TWO products): use record_recount
+    or record_repack for those.
     """
     if reason not in _SIGN_BY_REASON:
         raise ValueError(
             f"record_stock_movement can't infer a sign for reason {reason!r}; "
-            "use record_recount for recounts, or one of "
-            f"{sorted(_SIGN_BY_REASON)} otherwise"
+            "use record_recount for recounts, record_repack for a pack/unit "
+            f"conversion, or one of {sorted(_SIGN_BY_REASON)} otherwise"
         )
 
-    base_quantity = to_base_quantity(db, product, quantity, unit_name)
-    delta = _SIGN_BY_REASON[reason] * abs(base_quantity)
+    delta = _SIGN_BY_REASON[reason] * abs(Decimal(str(quantity)))
 
     movement = StockMovement(
         business_id=business_id,
@@ -152,7 +132,6 @@ def record_recount(
     product: Product,
     new_quantity,
     *,
-    unit_name: str | None = None,
     source_type: str | None = None,
     source_id=None,
     note: str | None = None,
@@ -164,8 +143,7 @@ def record_recount(
     recorded, so "we recounted and confirmed" stays visible in the ledger)
     rather than silently skipped.
     """
-    base_new_quantity = to_base_quantity(db, product, new_quantity, unit_name)
-    delta = base_new_quantity - get_current_stock(db, product.id)
+    delta = Decimal(str(new_quantity)) - get_current_stock(db, product.id)
 
     movement = StockMovement(
         business_id=business_id,
@@ -179,3 +157,69 @@ def record_recount(
     db.add(movement)
     db.flush()
     return movement
+
+
+def record_repack(
+    db: Session,
+    business_id: uuid.UUID,
+    pack_product: Product,
+    quantity,
+    *,
+    direction: Literal["break", "assemble"],
+    source_type: str | None = "manual",
+    note: str | None = None,
+) -> tuple[StockMovement, StockMovement]:
+    """Converts stock between a pack product and its declared unit product
+    (see PackRelationship) -- "break" opens `quantity` packs into
+    `quantity * units_per_pack` units (a case into cans); "assemble" is the
+    reverse (cans back into a sealed case). Always an explicit, deliberate
+    action a person takes, never implicit at sale time -- whether to crack
+    open a sealed case for one customer or hold it for a bulk buyer is a
+    business judgment call, not something to infer. See docs/decisions.md
+    [2026-09-14].
+
+    Writes two linked movements in one call, sharing a `source_id` so
+    they're traceable as one event -- same "not this row, use the shared
+    id" reasoning app.ingestion.py already applies to a whole CSV batch's
+    recount. Like every other movement here, this doesn't block on
+    insufficient stock (breaking more cases than you have goes negative,
+    same as an oversold sale) -- consistent with the rest of the ledger's
+    posture, not a new exception.
+    """
+    relationship = get_pack_relationship(db, pack_product.id)
+    if relationship is None:
+        raise ValueError(f"product {pack_product.id} has no declared pack relationship")
+
+    unit_product = db.get(Product, relationship.unit_product_id)
+    quantity = Decimal(str(quantity))
+    unit_magnitude = quantity * relationship.units_per_pack
+    if direction == "break":
+        pack_delta, unit_delta = -quantity, unit_magnitude
+    elif direction == "assemble":
+        pack_delta, unit_delta = quantity, -unit_magnitude
+    else:
+        raise ValueError(f"record_repack direction must be 'break' or 'assemble', got {direction!r}")
+
+    repack_id = uuid.uuid4()
+    pack_movement = StockMovement(
+        business_id=business_id,
+        product_id=pack_product.id,
+        quantity_delta=pack_delta,
+        reason="repack",
+        source_type=source_type,
+        source_id=repack_id,
+        note=note,
+    )
+    unit_movement = StockMovement(
+        business_id=business_id,
+        product_id=unit_product.id,
+        quantity_delta=unit_delta,
+        reason="repack",
+        source_type=source_type,
+        source_id=repack_id,
+        note=note,
+    )
+    db.add(pack_movement)
+    db.add(unit_movement)
+    db.flush()
+    return pack_movement, unit_movement

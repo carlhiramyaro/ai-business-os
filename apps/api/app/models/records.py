@@ -15,7 +15,10 @@ class Sale(Base):
     sale_date = Column(Date, nullable=True)
     product_name = Column(String, nullable=True)
     category = Column(String, nullable=True)
-    quantity = Column(Integer, nullable=True)
+    # Numeric, not Integer: one shared column across every sale, and some
+    # products (loose meat/produce by weight) sell in fractional amounts.
+    # See docs/decisions.md [2026-09-14].
+    quantity = Column(Numeric, nullable=True)
     unit_price = Column(Numeric, nullable=True)
     discount = Column(Numeric, nullable=True)
     total_amount = Column(Numeric, nullable=True)
@@ -40,8 +43,11 @@ class Inventory(Base):
     upload_session_id = Column(UUID(as_uuid=True), ForeignKey("upload_sessions.id"), nullable=False, index=True)
     product_name = Column(String, nullable=True)
     category = Column(String, nullable=True)
-    quantity = Column(Integer, nullable=True)
-    reorder_level = Column(Integer, nullable=True)
+    # Widened alongside Sale.quantity/Product.reorder_level -- an inventory
+    # row for a weight-tracked product (a 10.5 kg box) would otherwise
+    # silently truncate on insert. See docs/decisions.md [2026-09-14].
+    quantity = Column(Numeric, nullable=True)
+    reorder_level = Column(Numeric, nullable=True)
     supplier = Column(String, nullable=True)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True, index=True)
     cost_price = Column(Numeric, nullable=True)

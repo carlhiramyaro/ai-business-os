@@ -1,15 +1,17 @@
 import uuid
+from decimal import Decimal
 
 import pytest
 
 from app.entities import resolve_product
 from app.inventory import (
     get_current_stock,
+    get_pack_relationship,
     record_recount,
+    record_repack,
     record_stock_movement,
-    to_base_quantity,
 )
-from app.models import Business, Product, ProductUnit, User
+from app.models import Business, PackRelationship, Product, User
 
 
 def _seed_business(db_session):
@@ -24,6 +26,18 @@ def _seed_business(db_session):
 
 def _product(db_session, business, name="Rice", **kwargs):
     return resolve_product(db_session, business.id, name, **kwargs)
+
+
+def _link(db_session, business, pack_product, unit_product, units_per_pack):
+    relationship = PackRelationship(
+        business_id=business.id,
+        pack_product_id=pack_product.id,
+        unit_product_id=unit_product.id,
+        units_per_pack=units_per_pack,
+    )
+    db_session.add(relationship)
+    db_session.flush()
+    return relationship
 
 
 # --- resolve_product ---------------------------------------------------
@@ -109,48 +123,6 @@ def test_resolve_product_is_scoped_per_business(db_session):
     assert db_session.query(Product).count() == 2
 
 
-# --- to_base_quantity ----------------------------------------------------
-
-
-def test_to_base_quantity_passthrough_for_base_unit(db_session):
-    business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-
-    assert to_base_quantity(db_session, product, 5, None) == 5
-    assert to_base_quantity(db_session, product, 5, "piece") == 5
-
-
-def test_to_base_quantity_converts_declared_unit(db_session):
-    business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-    db_session.add(ProductUnit(product_id=product.id, unit_name="carton", conversion_to_base=24))
-    db_session.flush()
-
-    assert to_base_quantity(db_session, product, 2, "carton") == 48
-
-
-def test_to_base_quantity_rounds_to_whole_base_unit(db_session):
-    """Python's round() is round-half-to-even, not round-half-up -- 12.5
-    rounds to 12, not 13. Documented here so a future reader isn't
-    surprised; a fractional conversion factor is a rare enough input that
-    banker's rounding's slight bias-cancelling behavior is an acceptable,
-    deliberate default rather than something worth a custom implementation."""
-    business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-    db_session.add(ProductUnit(product_id=product.id, unit_name="half-carton", conversion_to_base=12.5))
-    db_session.flush()
-
-    assert to_base_quantity(db_session, product, 1, "half-carton") == 12  # round(12.5) == 12, banker's rounding
-
-
-def test_to_base_quantity_unknown_unit_raises(db_session):
-    business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-
-    with pytest.raises(ValueError):
-        to_base_quantity(db_session, product, 1, "carton")
-
-
 # --- record_stock_movement / get_current_stock ---------------------------
 
 
@@ -184,22 +156,23 @@ def test_record_stock_movement_loss_and_damage_decrease_stock(db_session):
     assert get_current_stock(db_session, product.id) == 47
 
 
-def test_record_stock_movement_converts_declared_unit_before_writing(db_session):
+def test_record_stock_movement_supports_fractional_quantity(db_session):
+    """A loose product sold by weight (2.3 kg) needs a fractional
+    quantity -- Decimal end to end, not int. See docs/decisions.md
+    [2026-09-14]."""
     business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-    db_session.add(ProductUnit(product_id=product.id, unit_name="carton", conversion_to_base=24))
-    db_session.flush()
+    product = _product(db_session, business, base_unit="kg")
+    record_stock_movement(db_session, business.id, product, "10.5", reason="restock")
 
-    record_stock_movement(db_session, business.id, product, 2, reason="restock", unit_name="carton")
+    record_stock_movement(db_session, business.id, product, "2.3", reason="sale")
 
-    assert get_current_stock(db_session, product.id) == 48
+    assert get_current_stock(db_session, product.id) == Decimal("8.2")
 
 
 def test_record_stock_movement_direction_comes_from_reason_not_quantity_sign(db_session):
     """A caller passing a negative quantity for a 'sale' must not double
     the sign and accidentally restock -- direction comes from `reason`
-    alone, so abs() is applied to the converted quantity regardless of the
-    sign passed in."""
+    alone, so abs() is applied regardless of the sign passed in."""
     business = _seed_business(db_session)
     product = _product(db_session, business)
     record_stock_movement(db_session, business.id, product, 50, reason="restock")
@@ -223,6 +196,14 @@ def test_record_stock_movement_recount_reason_raises_use_record_recount(db_sessi
 
     with pytest.raises(ValueError):
         record_stock_movement(db_session, business.id, product, 1, reason="recount")
+
+
+def test_record_stock_movement_repack_reason_raises_use_record_repack(db_session):
+    business = _seed_business(db_session)
+    product = _product(db_session, business)
+
+    with pytest.raises(ValueError):
+        record_stock_movement(db_session, business.id, product, 1, reason="repack")
 
 
 def test_get_current_stock_is_scoped_per_product(db_session):
@@ -280,14 +261,100 @@ def test_record_recount_matching_reality_is_a_recorded_zero_delta_movement(db_se
     assert get_current_stock(db_session, product.id) == 40
 
 
-def test_record_recount_respects_declared_unit(db_session):
+# --- record_repack / get_pack_relationship ----------------------------------
+
+
+def test_get_pack_relationship_is_none_when_undeclared(db_session):
     business = _seed_business(db_session)
-    product = _product(db_session, business, base_unit="piece")
-    db_session.add(ProductUnit(product_id=product.id, unit_name="carton", conversion_to_base=24))
-    db_session.flush()
-    record_stock_movement(db_session, business.id, product, 50, reason="restock")  # 50 pieces
+    product = _product(db_session, business)
+    assert get_pack_relationship(db_session, product.id) is None
 
-    movement = record_recount(db_session, business.id, product, 2, unit_name="carton")  # asserts 48 pieces
 
-    assert movement.quantity_delta == -2
-    assert get_current_stock(db_session, product.id) == 48
+def test_record_repack_break_moves_stock_from_pack_to_unit(db_session):
+    business = _seed_business(db_session)
+    case = _product(db_session, business, name="Coke Case")
+    can = _product(db_session, business, name="Coke Can")
+    _link(db_session, business, case, can, units_per_pack=24)
+    record_stock_movement(db_session, business.id, case, 5, reason="restock")
+
+    pack_movement, unit_movement = record_repack(db_session, business.id, case, 1, direction="break")
+
+    assert pack_movement.quantity_delta == -1
+    assert unit_movement.quantity_delta == 24
+    assert get_current_stock(db_session, case.id) == 4
+    assert get_current_stock(db_session, can.id) == 24
+
+
+def test_record_repack_assemble_moves_stock_from_unit_to_pack(db_session):
+    business = _seed_business(db_session)
+    case = _product(db_session, business, name="Coke Case")
+    can = _product(db_session, business, name="Coke Can")
+    _link(db_session, business, case, can, units_per_pack=24)
+    record_stock_movement(db_session, business.id, can, 24, reason="restock")
+
+    pack_movement, unit_movement = record_repack(db_session, business.id, case, 1, direction="assemble")
+
+    assert pack_movement.quantity_delta == 1
+    assert unit_movement.quantity_delta == -24
+    assert get_current_stock(db_session, case.id) == 1
+    assert get_current_stock(db_session, can.id) == 0
+
+
+def test_record_repack_movements_share_one_source_id(db_session):
+    business = _seed_business(db_session)
+    case = _product(db_session, business, name="Coke Case")
+    can = _product(db_session, business, name="Coke Can")
+    _link(db_session, business, case, can, units_per_pack=24)
+
+    pack_movement, unit_movement = record_repack(db_session, business.id, case, 1, direction="break")
+
+    assert pack_movement.source_id == unit_movement.source_id
+    assert pack_movement.reason == unit_movement.reason == "repack"
+
+
+def test_record_repack_supports_fractional_units_per_pack(db_session):
+    """A 10.5 kg box of meat, sold either by the box or by the kg."""
+    business = _seed_business(db_session)
+    box = _product(db_session, business, name="Meat Box")
+    loose = _product(db_session, business, name="Meat (loose)", base_unit="kg")
+    _link(db_session, business, box, loose, units_per_pack="10.5")
+    record_stock_movement(db_session, business.id, box, 1, reason="restock")
+
+    record_repack(db_session, business.id, box, 1, direction="break")
+    record_stock_movement(db_session, business.id, loose, "2.3", reason="sale")
+
+    assert get_current_stock(db_session, box.id) == 0
+    assert get_current_stock(db_session, loose.id) == Decimal("8.2")
+
+
+def test_record_repack_without_declared_relationship_raises(db_session):
+    business = _seed_business(db_session)
+    product = _product(db_session, business)
+
+    with pytest.raises(ValueError):
+        record_repack(db_session, business.id, product, 1, direction="break")
+
+
+def test_record_repack_invalid_direction_raises(db_session):
+    business = _seed_business(db_session)
+    case = _product(db_session, business, name="Coke Case")
+    can = _product(db_session, business, name="Coke Can")
+    _link(db_session, business, case, can, units_per_pack=24)
+
+    with pytest.raises(ValueError):
+        record_repack(db_session, business.id, case, 1, direction="explode")
+
+
+def test_record_repack_allows_going_negative_same_as_a_sale(db_session):
+    """Breaking more cases than you have goes negative -- consistent with
+    every other movement here (an oversold sale isn't blocked either),
+    not a new exception for repack."""
+    business = _seed_business(db_session)
+    case = _product(db_session, business, name="Coke Case")
+    can = _product(db_session, business, name="Coke Can")
+    _link(db_session, business, case, can, units_per_pack=24)
+
+    record_repack(db_session, business.id, case, 3, direction="break")
+
+    assert get_current_stock(db_session, case.id) == -3
+    assert get_current_stock(db_session, can.id) == 72

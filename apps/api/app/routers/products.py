@@ -4,13 +4,15 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_product
 from app.entities import suggest_sku
-from app.inventory import get_current_stock, list_current_stock, record_recount, record_stock_movement
-from app.models import Business, Product, ProductUnit
+from app.inventory import get_current_stock, get_pack_relationship, list_current_stock, record_recount, record_repack, record_stock_movement
+from app.models import Business, PackRelationship, Product
 from app.schemas.products import (
+    PackRelationshipItem,
+    PackRelationshipRequest,
     ProductItem,
-    ProductUnitItem,
-    ProductUnitRequest,
     ProductUpdate,
+    RepackRequest,
+    RepackResponse,
     StockAdjustmentRequest,
     StockAdjustmentResponse,
     SuggestedSkuResponse,
@@ -22,11 +24,14 @@ router = APIRouter(prefix="/api/v1/businesses/{business_id}/products", tags=["pr
 # /inventory page -- list current stock, edit a product's own fields
 # (sku/category/baseUnit/reorderLevel/prices -- never quantity, which is
 # ledger-derived, not settable directly), record a restock/recount/loss/
-# damage adjustment, and declare a non-base unit (e.g. "carton" = 24
-# "piece") for real unit conversion. See docs/decisions.md [2026-09-14].
+# damage adjustment. docs/decisions.md [2026-09-14] added pack
+# relationships -- declaring that one product is a sealed pack of another
+# (a case of cans) and the explicit "break"/"assemble" repack action that
+# converts between them -- replacing an earlier per-transaction unit
+# conversion (ProductUnit) that turned out to be a confusing setup flow.
 
 
-def _low_stock(quantity: int, reorder_level: int | None) -> bool:
+def _low_stock(quantity, reorder_level) -> bool:
     return reorder_level is not None and quantity <= reorder_level
 
 
@@ -109,30 +114,14 @@ def create_stock_adjustment(
     product: Product = Depends(get_owned_product),
     db: Session = Depends(get_db),
 ):
-    try:
-        if payload.reason == "recount":
-            movement = record_recount(
-                db,
-                business.id,
-                product,
-                payload.quantity,
-                unit_name=payload.unit_name,
-                source_type="manual",
-                note=payload.note,
-            )
-        else:
-            movement = record_stock_movement(
-                db,
-                business.id,
-                product,
-                payload.quantity,
-                reason=payload.reason,
-                unit_name=payload.unit_name,
-                source_type="manual",
-                note=payload.note,
-            )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if payload.reason == "recount":
+        movement = record_recount(
+            db, business.id, product, payload.quantity, source_type="manual", note=payload.note
+        )
+    else:
+        movement = record_stock_movement(
+            db, business.id, product, payload.quantity, reason=payload.reason, source_type="manual", note=payload.note
+        )
 
     db.commit()
     return StockAdjustmentResponse(
@@ -144,38 +133,85 @@ def create_stock_adjustment(
     )
 
 
-@router.get("/{product_id}/units", response_model=list[ProductUnitItem])
-def list_product_units(product: Product = Depends(get_owned_product), db: Session = Depends(get_db)):
-    return (
-        db.query(ProductUnit)
-        .filter(ProductUnit.product_id == product.id)
-        .order_by(ProductUnit.unit_name)
-        .all()
+@router.get("/{product_id}/pack-relationship", response_model=PackRelationshipItem | None)
+def get_product_pack_relationship(product: Product = Depends(get_owned_product), db: Session = Depends(get_db)):
+    """None (not 404) when this product isn't a pack of anything -- that's
+    the normal, expected state for most products, not an error."""
+    relationship = get_pack_relationship(db, product.id)
+    if relationship is None:
+        return None
+    unit_product = db.get(Product, relationship.unit_product_id)
+    return PackRelationshipItem(
+        id=relationship.id,
+        pack_product_id=relationship.pack_product_id,
+        unit_product_id=relationship.unit_product_id,
+        unit_product_name=unit_product.name,
+        units_per_pack=relationship.units_per_pack,
     )
 
 
-@router.post("/{product_id}/units", response_model=ProductUnitItem, status_code=status.HTTP_201_CREATED)
-def declare_product_unit(
-    payload: ProductUnitRequest,
+@router.post(
+    "/{product_id}/pack-relationship",
+    response_model=PackRelationshipItem,
+    status_code=status.HTTP_201_CREATED,
+)
+def declare_pack_relationship(
+    payload: PackRelationshipRequest,
+    business: Business = Depends(get_owned_business),
     product: Product = Depends(get_owned_product),
     db: Session = Depends(get_db),
 ):
-    """Get-or-update, not always-insert: redeclaring an existing unit name
-    corrects its conversion factor rather than erroring or duplicating,
-    matching the unique constraint on (product_id, unit_name)."""
-    unit_name = payload.unit_name.strip()
-    product_unit = (
-        db.query(ProductUnit)
-        .filter(ProductUnit.product_id == product.id, ProductUnit.unit_name == unit_name)
-        .one_or_none()
-    )
-    if product_unit is None:
-        product_unit = ProductUnit(
-            product_id=product.id, unit_name=unit_name, conversion_to_base=payload.conversion_to_base
+    """Get-or-update, not always-insert: redeclaring corrects the
+    unitsPerPack factor or which product it points at, rather than
+    erroring or duplicating -- matches the unique constraint on
+    pack_product_id (a product is a pack of at most one other product)."""
+    unit_product = db.get(Product, payload.unit_product_id)
+    if unit_product is None or unit_product.business_id != business.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    if unit_product.id == product.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A product can't be a pack of itself")
+
+    relationship = get_pack_relationship(db, product.id)
+    if relationship is None:
+        relationship = PackRelationship(
+            business_id=business.id,
+            pack_product_id=product.id,
+            unit_product_id=unit_product.id,
+            units_per_pack=payload.units_per_pack,
         )
-        db.add(product_unit)
+        db.add(relationship)
     else:
-        product_unit.conversion_to_base = payload.conversion_to_base
+        relationship.unit_product_id = unit_product.id
+        relationship.units_per_pack = payload.units_per_pack
     db.commit()
-    db.refresh(product_unit)
-    return product_unit
+    db.refresh(relationship)
+    return PackRelationshipItem(
+        id=relationship.id,
+        pack_product_id=relationship.pack_product_id,
+        unit_product_id=relationship.unit_product_id,
+        unit_product_name=unit_product.name,
+        units_per_pack=relationship.units_per_pack,
+    )
+
+
+@router.post("/{product_id}/repack", response_model=RepackResponse, status_code=status.HTTP_201_CREATED)
+def create_repack(
+    payload: RepackRequest,
+    business: Business = Depends(get_owned_business),
+    product: Product = Depends(get_owned_product),
+    db: Session = Depends(get_db),
+):
+    try:
+        pack_movement, unit_movement = record_repack(
+            db, business.id, product, payload.quantity, direction=payload.direction, note=payload.note
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    db.commit()
+    return RepackResponse(
+        pack_product_id=pack_movement.product_id,
+        pack_current_stock=get_current_stock(db, pack_movement.product_id),
+        unit_product_id=unit_movement.product_id,
+        unit_current_stock=get_current_stock(db, unit_movement.product_id),
+    )

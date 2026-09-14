@@ -16,7 +16,7 @@ class SaleListItem(CamelModel):
     id: uuid.UUID
     sale_date: date | None
     product_name: str | None
-    quantity: int | None
+    quantity: Decimal | None
     unit_price: Decimal | None
     total_amount: Decimal | None
     customer_name: str | None

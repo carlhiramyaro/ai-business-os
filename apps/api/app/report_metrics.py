@@ -25,9 +25,17 @@ def compute_finance_metrics(sale_totals: list, expense_amounts: list, expense_ca
 
 
 def compute_inventory_metrics(inventory_items: list[dict]) -> dict:
-    """Each item: {"productName", "quantity", "reorderLevel", "costPrice"}."""
+    """Each item: {"productName", "quantity", "reorderLevel", "costPrice"}.
+    quantity/reorderLevel arrive as Decimal (docs/decisions.md
+    [2026-09-14]) -- converted to float here, same as every other numeric
+    field this module outputs, so the result stays plain-JSON-serializable
+    for the report agents' prompts."""
     low_stock = [
-        {"productName": item["productName"], "quantity": item["quantity"], "reorderLevel": item["reorderLevel"]}
+        {
+            "productName": item["productName"],
+            "quantity": _to_float(item["quantity"]),
+            "reorderLevel": _to_float(item["reorderLevel"]),
+        }
         for item in inventory_items
         if item["quantity"] is not None and item["reorderLevel"] is not None and item["quantity"] <= item["reorderLevel"]
     ]

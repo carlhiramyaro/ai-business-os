@@ -6,7 +6,7 @@ from app.models.entities import Customer, Supplier
 from app.models.insight import Insight
 from app.models.memory import BusinessFact
 from app.models.pending_entry import PendingEntry
-from app.models.product import Product, ProductUnit, StockMovement
+from app.models.product import PackRelationship, Product, ProductUnit, StockMovement
 from app.models.records import Expense, Inventory, Sale
 from app.models.report import Report, ReportSection
 from app.models.upload import ColumnMapping, DatasetProfile, DocumentExtraction, UploadSession
@@ -41,4 +41,5 @@ __all__ = [
     "Product",
     "ProductUnit",
     "StockMovement",
+    "PackRelationship",
 ]

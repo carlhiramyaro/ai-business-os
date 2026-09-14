@@ -55,7 +55,7 @@ def test_propose_sale_entry_computes_total_when_omitted(db_session):
     assert entry.status == "pending"
     assert entry.dataset_type == "sales"
     assert entry.fields["product_name"] == "Rice"
-    assert entry.fields["quantity"] == 3
+    assert entry.fields["quantity"] == "3"
     assert entry.fields["total_amount"] == "150"
     assert entry.fields["sale_date"] == TODAY.isoformat()
 
@@ -125,7 +125,7 @@ def test_propose_inventory_entry_stages_row(db_session):
     assert result["proposed"] is True
     [entry] = db_session.query(PendingEntry).all()
     assert entry.dataset_type == "inventory"
-    assert entry.fields["quantity"] == 50
+    assert entry.fields["quantity"] == "50"
     assert db_session.query(Inventory).count() == 0
 
 

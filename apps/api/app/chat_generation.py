@@ -105,7 +105,10 @@ _PROPOSE_SALE_ENTRY_SCHEMA = {
             "type": "object",
             "properties": {
                 "product_name": {"type": "string", "description": "What was sold."},
-                "quantity": {"type": "integer", "description": "How many units."},
+                "quantity": {
+                    "type": "number",
+                    "description": "How many units -- a whole number for counted items, a decimal (e.g. 2.5) for something sold by weight/volume.",
+                },
                 "unit_price": {"type": "number", "description": "Price per unit, if mentioned."},
                 "discount": {"type": "number", "description": "Discount amount, if mentioned."},
                 "total_amount": {
@@ -167,9 +170,12 @@ _PROPOSE_INVENTORY_ENTRY_SCHEMA = {
             "type": "object",
             "properties": {
                 "product_name": {"type": "string"},
-                "quantity": {"type": "integer", "description": "The resulting quantity on hand, not a delta."},
+                "quantity": {
+                    "type": "number",
+                    "description": "The resulting quantity on hand, not a delta -- a decimal (e.g. 2.5) for something sold by weight/volume.",
+                },
                 "category": {"type": "string"},
-                "reorder_level": {"type": "integer"},
+                "reorder_level": {"type": "number"},
                 "supplier": {"type": "string"},
                 "cost_price": {"type": "number"},
                 "selling_price": {"type": "number"},

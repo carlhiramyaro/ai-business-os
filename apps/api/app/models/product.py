@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -35,7 +35,10 @@ class Product(Base):
     # entered in a different (product_units-declared) unit is converted to
     # this one before a StockMovement is written.
     base_unit = Column(String, nullable=False, server_default="unit")
-    reorder_level = Column(Integer, nullable=True)
+    # Numeric, not Integer: a weight/volume-tracked product (loose meat by
+    # the kg) has a fractional reorder point too, e.g. "reorder below 2.5
+    # kg" -- see docs/decisions.md [2026-09-14], "pack relationships".
+    reorder_level = Column(Numeric, nullable=True)
     cost_price = Column(Numeric, nullable=True)
     selling_price = Column(Numeric, nullable=True)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True, index=True)
@@ -44,11 +47,15 @@ class Product(Base):
 
 
 class ProductUnit(Base):
-    """A non-base unit a product is bought/sold in, e.g. "carton" = 24 of
-    a product whose base_unit is "piece". conversion_to_base multiplies a
-    quantity entered in this unit into base-unit quantity before a
-    StockMovement is written -- see app/inventory.py's to_base_quantity.
-    The base unit itself never gets a row here; it lives on Product.base_unit.
+    """DEPRECATED (docs/decisions.md [2026-09-14]): per-transaction unit
+    conversion on a single product turned out to be a confusing setup
+    flow (declare a conversion factor before you can use it, disconnected
+    from the sale/restock you were trying to record) for a mental model
+    ("I stock cases, I sell cans") better served by two separate,
+    explicitly-linked products -- see PackRelationship below. No
+    application code writes or reads this table anymore; kept rather than
+    dropped per the schema-frozen rule (docs/agent-instructions.md), not
+    because it's still meaningful.
     """
 
     __tablename__ = "product_units"
@@ -82,11 +89,49 @@ class StockMovement(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     business_id = Column(UUID(as_uuid=True), ForeignKey("businesses.id"), nullable=False, index=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
-    quantity_delta = Column(Integer, nullable=False)
-    # 'sale' | 'restock' | 'recount' | 'loss' | 'damage'
+    # Numeric, not Integer: a can or a case is always a whole number, but
+    # loose meat/produce/fuel sold by weight or volume (2.3 kg) is not --
+    # one shared column across every product, so it has to accommodate
+    # the fractional case even though most rows will be whole numbers.
+    # See docs/decisions.md [2026-09-14].
+    quantity_delta = Column(Numeric, nullable=False)
+    # 'sale' | 'restock' | 'recount' | 'loss' | 'damage' | 'repack'
     reason = Column(String, nullable=False)
-    # what produced this movement: 'sale' | 'upload_session' | 'manual'
+    # what produced this movement: 'sale' | 'upload_session' | 'manual' | 'repack'
     source_type = Column(String, nullable=True)
     source_id = Column(UUID(as_uuid=True), nullable=True)
     note = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PackRelationship(Base):
+    """Declares that one product is a sealed pack of another -- "1 Coke
+    Case = 24 Coke Can" -- so the two can be sold independently (each its
+    own Product, its own stock_movements, its own price/reorder level)
+    while still letting an owner convert between them with one explicit
+    action (app/inventory.py's record_repack) instead of a disconnected
+    per-transaction unit conversion. See docs/decisions.md [2026-09-14]
+    for why this replaced ProductUnit.
+
+    `pack_product_id` is unique: a product is a pack of at most one other
+    product (a case is a case of cans, not simultaneously a case of two
+    different things). Nothing stops a `unit_product` from itself being a
+    `pack_product` in a second relationship (a pallet of cases of cans) --
+    each repack is still one explicit, independent action; there is no
+    multi-level "break a pallet straight into cans" shortcut.
+    """
+
+    __tablename__ = "pack_relationships"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    business_id = Column(UUID(as_uuid=True), ForeignKey("businesses.id"), nullable=False, index=True)
+    pack_product_id = Column(
+        UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, unique=True, index=True
+    )
+    unit_product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
+    # How many `unit_product` a single `pack_product` contains. Numeric,
+    # not Integer -- a box of meat is "10.5 kg", not necessarily a round
+    # number, even though the box itself is always sold as one whole box.
+    units_per_pack = Column(Numeric, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

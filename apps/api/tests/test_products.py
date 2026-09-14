@@ -3,7 +3,6 @@ from decimal import Decimal
 
 from app.entities import resolve_product
 from app.inventory import record_recount, record_stock_movement
-from app.models import ProductUnit
 from tests.auth_helpers import auth_header, register_and_login
 
 
@@ -33,9 +32,9 @@ def test_list_products_returns_current_stock_and_low_stock_flag(client, db_sessi
     response = client.get(f"/api/v1/businesses/{business_id}/products", headers=auth_header(token))
     assert response.status_code == 200
     items = {item["name"]: item for item in response.json()}
-    assert items["Rice"]["quantity"] == 5
+    assert Decimal(items["Rice"]["quantity"]) == 5
     assert items["Rice"]["lowStock"] is True
-    assert items["Beans"]["quantity"] == 50
+    assert Decimal(items["Beans"]["quantity"]) == 50
     assert items["Beans"]["lowStock"] is False
 
 
@@ -53,7 +52,7 @@ def test_update_product_patches_only_given_fields(client, db_session):
     assert response.status_code == 200
     body = response.json()
     assert body["sku"] == "RICE-5KG"
-    assert body["reorderLevel"] == 10
+    assert Decimal(body["reorderLevel"]) == 10
     assert body["category"] is None  # untouched
 
 
@@ -70,8 +69,25 @@ def test_create_stock_adjustment_restock_increases_stock(client, db_session):
     )
     assert response.status_code == 201
     body = response.json()
-    assert body["quantityDelta"] == 50
-    assert body["currentStock"] == 50
+    assert Decimal(body["quantityDelta"]) == 50
+    assert Decimal(body["currentStock"]) == 50
+
+
+def test_create_stock_adjustment_supports_fractional_quantity(client, db_session):
+    """A loose product sold by weight -- Decimal end to end, not int. See
+    docs/decisions.md [2026-09-14]."""
+    token = register_and_login("products4b@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Meat", base_unit="kg")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/stock-movements",
+        json={"reason": "restock", "quantity": "10.5"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+    assert Decimal(response.json()["currentStock"]) == Decimal("10.5")
 
 
 def test_create_stock_adjustment_recount_sets_absolute_count(client, db_session):
@@ -88,87 +104,8 @@ def test_create_stock_adjustment_recount_sets_absolute_count(client, db_session)
     )
     assert response.status_code == 201
     body = response.json()
-    assert body["quantityDelta"] == -17
-    assert body["currentStock"] == 33
-
-
-def test_create_stock_adjustment_unknown_unit_returns_400(client, db_session):
-    token = register_and_login("products6@example.com")
-    business_id = _create_business(client, token)
-    product = resolve_product(db_session, uuid.UUID(business_id), "Rice")
-    db_session.commit()
-
-    response = client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/stock-movements",
-        json={"reason": "restock", "quantity": 2, "unitName": "carton"},
-        headers=auth_header(token),
-    )
-    assert response.status_code == 400
-
-
-def test_declare_product_unit_then_adjust_using_it(client, db_session):
-    token = register_and_login("products7@example.com")
-    business_id = _create_business(client, token)
-    product = resolve_product(db_session, uuid.UUID(business_id), "Rice", base_unit="piece")
-    db_session.commit()
-
-    declare_response = client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/units",
-        json={"unitName": "carton", "conversionToBase": 24},
-        headers=auth_header(token),
-    )
-    assert declare_response.status_code == 201
-    assert db_session.query(ProductUnit).filter(ProductUnit.product_id == product.id).count() == 1
-
-    adjust_response = client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/stock-movements",
-        json={"reason": "restock", "quantity": 2, "unitName": "carton"},
-        headers=auth_header(token),
-    )
-    assert adjust_response.status_code == 201
-    assert adjust_response.json()["currentStock"] == 48
-
-
-def test_list_product_units_returns_declared_units(client, db_session):
-    token = register_and_login("products14@example.com")
-    business_id = _create_business(client, token)
-    product = resolve_product(db_session, uuid.UUID(business_id), "Rice", base_unit="piece")
-    db_session.commit()
-
-    assert client.get(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/units", headers=auth_header(token)
-    ).json() == []
-
-    client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/units",
-        json={"unitName": "carton", "conversionToBase": 24},
-        headers=auth_header(token),
-    )
-    response = client.get(f"/api/v1/businesses/{business_id}/products/{product.id}/units", headers=auth_header(token))
-    assert response.status_code == 200
-    assert [u["unitName"] for u in response.json()] == ["carton"]
-
-
-def test_declare_product_unit_twice_updates_conversion_rather_than_duplicating(client, db_session):
-    token = register_and_login("products8@example.com")
-    business_id = _create_business(client, token)
-    product = resolve_product(db_session, uuid.UUID(business_id), "Rice")
-    db_session.commit()
-
-    client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/units",
-        json={"unitName": "carton", "conversionToBase": 24},
-        headers=auth_header(token),
-    )
-    client.post(
-        f"/api/v1/businesses/{business_id}/products/{product.id}/units",
-        json={"unitName": "carton", "conversionToBase": 12},
-        headers=auth_header(token),
-    )
-
-    units = db_session.query(ProductUnit).filter(ProductUnit.product_id == product.id).all()
-    assert len(units) == 1
-    assert units[0].conversion_to_base == 12
+    assert Decimal(body["quantityDelta"]) == -17
+    assert Decimal(body["currentStock"]) == 33
 
 
 def test_products_endpoints_forbidden_for_non_owner(client, db_session):
@@ -255,3 +192,173 @@ def test_suggested_sku_forbidden_for_non_owner(client, db_session):
         headers=auth_header(intruder_token),
     )
     assert response.status_code == 403
+
+
+# --- pack relationships / repack (docs/decisions.md [2026-09-14]) ----------
+
+
+def test_get_pack_relationship_is_none_when_undeclared(client, db_session):
+    token = register_and_login("products14@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/pack-relationship", headers=auth_header(token)
+    )
+    assert response.status_code == 200
+    assert response.json() is None
+
+
+def test_declare_pack_relationship_creates_link(client, db_session):
+    token = register_and_login("products15@example.com")
+    business_id = _create_business(client, token)
+    case = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+    can = resolve_product(db_session, uuid.UUID(business_id), "Coke Can")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+        json={"unitProductId": str(can.id), "unitsPerPack": 24},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["unitProductId"] == str(can.id)
+    assert body["unitProductName"] == "Coke Can"
+    assert Decimal(body["unitsPerPack"]) == 24
+
+    get_response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship", headers=auth_header(token)
+    )
+    assert get_response.json()["unitProductId"] == str(can.id)
+
+
+def test_declare_pack_relationship_twice_updates_rather_than_duplicating(client, db_session):
+    token = register_and_login("products16@example.com")
+    business_id = _create_business(client, token)
+    case = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+    can = resolve_product(db_session, uuid.UUID(business_id), "Coke Can")
+    db_session.commit()
+
+    client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+        json={"unitProductId": str(can.id), "unitsPerPack": 24},
+        headers=auth_header(token),
+    )
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+        json={"unitProductId": str(can.id), "unitsPerPack": 12},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    from app.models import PackRelationship
+
+    relationships = db_session.query(PackRelationship).filter(PackRelationship.pack_product_id == case.id).all()
+    assert len(relationships) == 1
+    assert relationships[0].units_per_pack == 12
+
+
+def test_declare_pack_relationship_rejects_linking_to_itself(client, db_session):
+    token = register_and_login("products17@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Rice")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/pack-relationship",
+        json={"unitProductId": str(product.id), "unitsPerPack": 2},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400
+
+
+def test_declare_pack_relationship_404_for_unit_product_in_another_business(client, db_session):
+    token = register_and_login("products18@example.com")
+    business_id = _create_business(client, token)
+    case = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+
+    other_business_id = _create_business(client, token, name="Another Co")
+    other_product = resolve_product(db_session, uuid.UUID(other_business_id), "Something Else")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+        json={"unitProductId": str(other_product.id), "unitsPerPack": 2},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 404
+
+
+def test_create_repack_break_converts_pack_stock_into_unit_stock(client, db_session):
+    token = register_and_login("products19@example.com")
+    business_id = _create_business(client, token)
+    case = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+    can = resolve_product(db_session, uuid.UUID(business_id), "Coke Can")
+    record_stock_movement(db_session, uuid.UUID(business_id), case, 5, reason="restock")
+    db_session.commit()
+
+    client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+        json={"unitProductId": str(can.id), "unitsPerPack": 24},
+        headers=auth_header(token),
+    )
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{case.id}/repack",
+        json={"quantity": 1, "direction": "break"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert Decimal(body["packCurrentStock"]) == 4
+    assert Decimal(body["unitCurrentStock"]) == 24
+
+
+def test_create_repack_without_relationship_returns_400(client, db_session):
+    token = register_and_login("products20@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Rice")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/repack",
+        json={"quantity": 1, "direction": "break"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400
+
+
+def test_pack_relationship_and_repack_forbidden_for_non_owner(client, db_session):
+    token = register_and_login("products21@example.com")
+    business_id = _create_business(client, token)
+    case = resolve_product(db_session, uuid.UUID(business_id), "Coke Case")
+    can = resolve_product(db_session, uuid.UUID(business_id), "Coke Can")
+    db_session.commit()
+
+    intruder_token = register_and_login("products_intruder3@example.com")
+    intruder_headers = auth_header(intruder_token)
+
+    assert (
+        client.get(
+            f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship", headers=intruder_headers
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/v1/businesses/{business_id}/products/{case.id}/pack-relationship",
+            json={"unitProductId": str(can.id), "unitsPerPack": 24},
+            headers=intruder_headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/v1/businesses/{business_id}/products/{case.id}/repack",
+            json={"quantity": 1, "direction": "break"},
+            headers=intruder_headers,
+        ).status_code
+        == 403
+    )
