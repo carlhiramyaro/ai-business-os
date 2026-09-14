@@ -67,3 +67,7 @@ class ProductUnitItem(CamelModel):
     unit_name: str
     conversion_to_base: Decimal
     created_at: datetime
+
+
+class SuggestedSkuResponse(CamelModel):
+    sku: str

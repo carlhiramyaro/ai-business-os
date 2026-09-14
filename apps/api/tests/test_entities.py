@@ -6,6 +6,7 @@ from app.entities import (
     normalize_entity_name,
     resolve_customer,
     resolve_supplier,
+    suggest_sku,
 )
 from app.ingestion import ingest_rows
 from app.models import Business, Customer, Supplier, UploadSession, User
@@ -172,3 +173,19 @@ def test_entities_endpoints_forbidden_for_non_owner(client, db_session):
     assert response.status_code == 403
     response = client.get(f"/api/v1/businesses/{business_id}/suppliers", headers=auth_header(intruder_token))
     assert response.status_code == 403
+
+
+def test_suggest_sku_slugifies_name():
+    assert suggest_sku("Rice", set()) == "RICE"
+    assert suggest_sku("Palm Oil (5L)", set()) == "PALM-OIL-5L"
+    assert suggest_sku("  rice  ", set()) == "RICE"
+
+
+def test_suggest_sku_disambiguates_on_collision():
+    assert suggest_sku("Rice", {"RICE"}) == "RICE-2"
+    assert suggest_sku("Rice", {"RICE", "RICE-2"}) == "RICE-3"
+
+
+def test_suggest_sku_blank_name_falls_back_to_sku():
+    assert suggest_sku("", set()) == "SKU"
+    assert suggest_sku("   ", set()) == "SKU"

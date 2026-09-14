@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_owned_business, get_owned_product
+from app.entities import suggest_sku
 from app.inventory import get_current_stock, list_current_stock, record_recount, record_stock_movement
 from app.models import Business, Product, ProductUnit
 from app.schemas.products import (
@@ -12,6 +13,7 @@ from app.schemas.products import (
     ProductUpdate,
     StockAdjustmentRequest,
     StockAdjustmentResponse,
+    SuggestedSkuResponse,
 )
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/products", tags=["products"])
@@ -77,6 +79,23 @@ def update_product(
             "sellingPrice": product.selling_price,
         }
     )
+
+
+@router.get("/{product_id}/suggested-sku", response_model=SuggestedSkuResponse)
+def get_suggested_sku(
+    business: Business = Depends(get_owned_business),
+    product: Product = Depends(get_owned_product),
+    db: Session = Depends(get_db),
+):
+    """A proposal, not an assignment -- the owner sees this as a button on
+    the Edit form and can accept, edit, or ignore it; nothing here writes
+    to the product. See app.entities.suggest_sku."""
+    existing_skus = {
+        sku
+        for (sku,) in db.query(Product.sku).filter(Product.business_id == business.id, Product.sku.isnot(None))
+    }
+    existing_skus.discard(product.sku)  # don't disambiguate against the product's own current sku
+    return SuggestedSkuResponse(sku=suggest_sku(product.name, existing_skus))
 
 
 @router.post(

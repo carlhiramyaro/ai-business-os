@@ -185,3 +185,53 @@ def test_get_owned_product_404_for_unknown_product(client, db_session):
         f"/api/v1/businesses/{business_id}/products/{uuid.uuid4()}", json={"sku": "X"}, headers=auth_header(token)
     )
     assert response.status_code == 404
+
+
+def test_suggested_sku_slugifies_product_name(client, db_session):
+    token = register_and_login("products11@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Palm Oil")
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/suggested-sku", headers=auth_header(token)
+    )
+    assert response.status_code == 200
+    assert response.json()["sku"] == "PALM-OIL"
+
+
+def test_suggested_sku_disambiguates_against_other_products_in_the_business(client, db_session):
+    token = register_and_login("products12@example.com")
+    business_id = _create_business(client, token)
+    # Distinct products (different normalized_name -> not deduped by
+    # resolve_product) whose names slugify to the same base SKU.
+    rice = resolve_product(db_session, uuid.UUID(business_id), "Rice", sku="RICE")
+    rice_variant = resolve_product(db_session, uuid.UUID(business_id), "Rice!")
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{rice_variant.id}/suggested-sku", headers=auth_header(token)
+    )
+    assert response.status_code == 200
+    assert response.json()["sku"] == "RICE-2"
+
+    # a product's own current sku never counts as a collision against itself
+    response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{rice.id}/suggested-sku", headers=auth_header(token)
+    )
+    assert response.status_code == 200
+    assert response.json()["sku"] == "RICE"
+
+
+def test_suggested_sku_forbidden_for_non_owner(client, db_session):
+    token = register_and_login("products13@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Rice")
+    db_session.commit()
+
+    intruder_token = register_and_login("products_intruder2@example.com")
+    response = client.get(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/suggested-sku",
+        headers=auth_header(intruder_token),
+    )
+    assert response.status_code == 403

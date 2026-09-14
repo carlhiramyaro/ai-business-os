@@ -5,6 +5,7 @@ Deterministic, no LLM involvement. The normalization here MUST stay in
 sync with the SQL backfill in migration `add customers suppliers` —
 both lowercase, trim, and collapse internal whitespace."""
 
+import re
 import uuid
 
 from sqlalchemy import func
@@ -78,6 +79,31 @@ def resolve_supplier(db: Session, business_id: uuid.UUID, name) -> Supplier | No
     return supplier
 
 
+def suggest_sku(name: str, existing_skus: set[str]) -> str:
+    """A deterministic SKU proposal for a product name -- an uppercase,
+    dash-separated slug, disambiguated against `existing_skus` (every SKU
+    already in use for the business) with a numeric suffix on collision.
+    Same name always proposes the same base slug; nothing random, same
+    deterministic-not-LLM-guess posture CLAUDE.md's arithmetic rule
+    describes, applied here to naming instead.
+
+    Two call sites: resolve_product uses this to auto-assign a SKU when a
+    NEW product is created and none was supplied (see its docstring for
+    why this is a default, not just a suggestion); the
+    GET .../suggested-sku endpoint (app/routers/products.py) also exposes
+    it directly, for an owner who cleared a SKU and wants a fresh one, or
+    for products that predate auto-assignment (no backfill -- see
+    docs/decisions.md).
+    """
+    base = re.sub(r"[^A-Z0-9]+", "-", name.strip().upper()).strip("-") or "SKU"
+    if base not in existing_skus:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in existing_skus:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
 def resolve_product(
     db: Session,
     business_id: uuid.UUID,
@@ -102,6 +128,17 @@ def resolve_product(
     sku/category/base_unit/reorder_level/cost_price/selling_price/
     supplier_id, but a blank/omitted value on this call never erases a
     value a previous call already set.
+
+    SKU is the one exception at creation time: a brand-new product with no
+    `sku` given gets one auto-assigned via suggest_sku, not left blank.
+    Most owners in this product's actual market (African informal retail,
+    product-vision.md) never had a SKU scheme to begin with and won't go
+    looking for one, so every product gets a real, searchable identifier
+    by default -- closer to how lightweight/informal-retail POS tools
+    (e.g. Loyverse) handle this than Shopify/Square's leave-it-blank
+    default, which assumes a merchant already has a scheme to import.
+    Still fully editable afterward via PATCH /products/{id} -- a default,
+    not a lock-in. See docs/decisions.md.
     """
     normalized = normalize_entity_name(name)
     if normalized is None:
@@ -113,11 +150,24 @@ def resolve_product(
         .one_or_none()
     )
     if product is None:
+        display_name = " ".join(str(name).split())
+        computed_sku = str(sku).strip() if sku is not None and str(sku).strip() else None
+        if computed_sku is None:
+            # See this function's docstring for why auto-assignment,
+            # not blank-until-edited, is the default here.
+            existing_skus = {
+                s
+                for (s,) in db.query(Product.sku).filter(
+                    Product.business_id == business_id, Product.sku.isnot(None)
+                )
+            }
+            computed_sku = suggest_sku(display_name, existing_skus)
         product = Product(
             business_id=business_id,
-            name=" ".join(str(name).split()),  # first-seen casing, cleaned spacing
+            name=display_name,  # first-seen casing, cleaned spacing
             normalized_name=normalized,
             base_unit=str(base_unit).strip() if base_unit is not None and str(base_unit).strip() else "unit",
+            sku=computed_sku,
         )
         db.add(product)
         db.flush()

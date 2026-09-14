@@ -655,6 +655,14 @@ export async function updateProduct(getToken: GetToken, businessId: string, prod
   }).then((response) => parseJsonOrThrow<Product>(response));
 }
 
+// A proposal, not an assignment -- nothing is written until the owner
+// accepts it (into the Edit form's SKU field) and saves.
+export async function getSuggestedSku(getToken: GetToken, businessId: string, productId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/suggested-sku`, {
+    headers: await authHeaders(getToken),
+  }).then((response) => parseJsonOrThrow<{ sku: string }>(response));
+}
+
 // "sale" is deliberately not an option here -- a sale's stock movement
 // comes from the sales-entry pipeline, not a direct manual adjustment.
 export type AdjustmentReason = "restock" | "recount" | "loss" | "damage";

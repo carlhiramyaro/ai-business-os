@@ -11,6 +11,7 @@ import {
   SaleListItem,
   createStockAdjustment,
   declareProductUnit,
+  getSuggestedSku,
   listExpenses,
   listProducts,
   listSales,
@@ -237,6 +238,20 @@ function EditForm({
   const [sellingPrice, setSellingPrice] = useState(product.sellingPrice ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+
+  async function handleSuggestSku() {
+    setError(null);
+    setSuggesting(true);
+    try {
+      const { sku: suggested } = await getSuggestedSku(getToken, businessId, product.id);
+      setSku(suggested);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not suggest a SKU");
+    } finally {
+      setSuggesting(false);
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -265,7 +280,19 @@ function EditForm({
       {error && <p className="text-sm text-danger-fg">{error}</p>}
       <div className="grid grid-cols-2 gap-3">
         <Field label="SKU">
-          <Input placeholder="e.g. RICE-5KG" value={sku} onChange={(e) => setSku(e.target.value)} />
+          <div className="flex gap-2">
+            <Input
+              placeholder="e.g. RICE-5KG"
+              value={sku}
+              onChange={(e) => setSku(e.target.value)}
+              className="min-w-0 flex-1"
+            />
+            {sku.trim() === "" && (
+              <Button type="button" variant="secondary" onClick={handleSuggestSku} disabled={suggesting}>
+                {suggesting ? "…" : "Suggest"}
+              </Button>
+            )}
+          </div>
         </Field>
         <Field label="Category">
           <Input placeholder="e.g. Grains" value={category} onChange={(e) => setCategory(e.target.value)} />

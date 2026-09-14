@@ -57,8 +57,11 @@ def test_resolve_product_defaults_base_unit_to_unit(db_session):
 def test_resolve_product_optional_fields_last_nonempty_wins(db_session):
     business = _seed_business(db_session)
 
+    # sku=None at creation auto-assigns rather than staying blank (see
+    # test_resolve_product_auto_assigns_sku_when_created_blank) -- this
+    # test is about the OTHER optional fields' last-nonempty-wins rule.
     product = resolve_product(db_session, business.id, "Rice", sku=None, reorder_level=None)
-    assert product.sku is None
+    assert product.sku == "RICE"
     assert product.reorder_level is None
 
     resolve_product(db_session, business.id, "Rice", sku="RICE-5KG", reorder_level=10)
@@ -72,6 +75,27 @@ def test_resolve_product_optional_fields_last_nonempty_wins(db_session):
 
     resolve_product(db_session, business.id, "Rice", sku="RICE-25KG")
     assert product.sku == "RICE-25KG"
+
+
+def test_resolve_product_auto_assigns_sku_when_created_blank(db_session):
+    business = _seed_business(db_session)
+    product = resolve_product(db_session, business.id, "Palm Oil")
+    assert product.sku == "PALM-OIL"
+
+
+def test_resolve_product_auto_assigned_sku_disambiguates_within_business(db_session):
+    business = _seed_business(db_session)
+    resolve_product(db_session, business.id, "Rice", sku="RICE")
+    # A different product (distinct normalized_name) whose name also
+    # slugifies to "RICE" -- must not collide with the explicit one above.
+    variant = resolve_product(db_session, business.id, "Rice!")
+    assert variant.sku == "RICE-2"
+
+
+def test_resolve_product_explicit_sku_skips_auto_assignment(db_session):
+    business = _seed_business(db_session)
+    product = resolve_product(db_session, business.id, "Rice", sku="CUSTOM-CODE")
+    assert product.sku == "CUSTOM-CODE"
 
 
 def test_resolve_product_is_scoped_per_business(db_session):
