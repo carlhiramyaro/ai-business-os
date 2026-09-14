@@ -24,12 +24,10 @@ env:
   API_URL: https://api.iamledger.app
   # Clerk publishable keys are designed to be embedded in client bundles
   # (unlike CLERK_SECRET_KEY, which only ever lives in SSM -- see
-  # infra/ssm.tf) -- from the Clerk dashboard's API Keys page. This is the
-  # Development instance's key, used as a deliberate stopgap (see
-  # docs/decisions.md) -- swap for a pk_live_ key once a Clerk Production
-  # instance exists; Clerk enforces stricter rate limits on dev instances
-  # in the meantime.
-  CLERK_PUBLISHABLE_KEY: pk_test_ZXZvbHZlZC1jb3lvdGUtNTEwNi5jbGVyay5hY2NvdW50cy5kZXYk
+  # infra/ssm.tf) -- from the Clerk dashboard's API Keys page, Production
+  # instance (clerk.iamledger.app). See docs/decisions.md's Clerk-
+  # production-cutover entry.
+  CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuaWFtbGVkZ2VyLmFwcCQ
 
 jobs:
   build-and-push:

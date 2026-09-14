@@ -29,3 +29,51 @@ resource "aws_route53_record" "api" {
   ttl     = 300
   records = [aws_eip.app.public_ip]
 }
+
+# Clerk production instance (docs/decisions.md's Clerk-migration entries).
+# All five are CNAMEs Clerk's dashboard asks for under Domains -> Configure
+# -- pasted verbatim from there, not something to hand-derive, since the
+# right-hand side values (frontend-api.clerk.services etc.) are Clerk's,
+# not ours. Clerk verifies DNS itself and won't issue TLS certificates for
+# the Frontend API / account portal until these resolve -- can take up to
+# 48h to propagate per Clerk's own docs, though Route 53 is typically far
+# faster.
+resource "aws_route53_record" "clerk_frontend_api" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "clerk.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["frontend-api.clerk.services"]
+}
+
+resource "aws_route53_record" "clerk_account_portal" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "accounts.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["accounts.clerk.services"]
+}
+
+resource "aws_route53_record" "clerk_mail" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "clkmail.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["mail.hlitks6cwkws.clerk.services"]
+}
+
+resource "aws_route53_record" "clerk_dkim1" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "clk._domainkey.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["dkim1.hlitks6cwkws.clerk.services"]
+}
+
+resource "aws_route53_record" "clerk_dkim2" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "clk2._domainkey.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["dkim2.hlitks6cwkws.clerk.services"]
+}
