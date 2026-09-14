@@ -18,7 +18,8 @@ from datetime import date, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Customer, Expense, Inventory, Sale
+from app.inventory import list_current_stock
+from app.models import Customer, Expense, Sale
 from app.report_metrics import compute_finance_metrics, compute_inventory_metrics
 
 MAX_RESULT_LIMIT = 25
@@ -235,16 +236,12 @@ def get_inactive_customers(
 
 
 def get_inventory_status(db: Session, business_id: uuid.UUID) -> dict:
-    items = [
-        {
-            "productName": row.product_name,
-            "quantity": row.quantity,
-            "reorderLevel": row.reorder_level,
-            "costPrice": row.cost_price,
-        }
-        for row in db.query(Inventory).filter(Inventory.business_id == business_id).all()
-    ]
-    return compute_inventory_metrics(items)
+    """v0.7 slice 3: reads the products/stock_movements ledger
+    (list_current_stock), one row per product, instead of summing every
+    raw `inventory` row ever inserted -- fixes the double-counting a
+    re-uploaded/re-entered product used to cause (docs/decisions.md
+    [2026-09-14])."""
+    return compute_inventory_metrics(list_current_stock(db, business_id))
 
 
 def execute_tool(db: Session, business_id: uuid.UUID, name: str, arguments: dict) -> dict:

@@ -19,9 +19,12 @@ from app.models import (
     Embedding,
     Expense,
     Inventory,
+    Product,
+    ProductUnit,
     Report,
     ReportSection,
     Sale,
+    StockMovement,
     Supplier,
     UploadSession,
     User,
@@ -92,6 +95,10 @@ def _patch_storage_and_db(monkeypatch):
         db.query(Report).delete()
         db.query(DatasetProfile).delete()
         db.query(ColumnMapping).delete()
+        # v0.7: FK'd to Business/Supplier, so must clear before those.
+        db.query(StockMovement).delete()
+        db.query(ProductUnit).delete()
+        db.query(Product).delete()
         db.query(Sale).delete()
         db.query(Inventory).delete()
         db.query(Expense).delete()

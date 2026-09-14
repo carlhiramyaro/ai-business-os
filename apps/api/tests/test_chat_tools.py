@@ -16,8 +16,9 @@ from app.chat_tools import (
     get_top_customers,
     get_top_products,
 )
-from app.entities import resolve_customer
-from app.models import Business, Expense, Inventory, Sale, UploadSession, User
+from app.entities import resolve_customer, resolve_product
+from app.inventory import record_recount
+from app.models import Business, Expense, Sale, UploadSession, User
 
 
 def _seed_business(db_session):
@@ -60,6 +61,16 @@ def _add_sale(db_session, business, upload_session, row_number, **overrides):
             **fields,
         )
     )
+
+
+def _set_stock(db_session, business, product_name, quantity, **product_kwargs):
+    """Mirrors what app.ingestion.ingest_rows does for an inventory row
+    since v0.7 slice 2: resolve the product entity, then record a recount
+    to `quantity` (an inventory row states an absolute count, not a
+    delta)."""
+    product = resolve_product(db_session, business.id, product_name, **product_kwargs)
+    record_recount(db_session, business.id, product, quantity)
+    return product
 
 
 def test_financial_summary_all_time_and_date_range(db_session):
@@ -162,27 +173,8 @@ def test_inactive_customers_uses_last_purchase_cutoff(db_session):
 
 def test_inventory_status_flags_low_stock(db_session):
     business, upload = _seed_business(db_session)
-    db_session.add(
-        Inventory(
-            business_id=business.id,
-            upload_session_id=upload.id,
-            product_name="Rice",
-            quantity=2,
-            reorder_level=5,
-            cost_price=Decimal("10.00"),
-        )
-    )
-    db_session.add(
-        Inventory(
-            business_id=business.id,
-            upload_session_id=upload.id,
-            product_name="Beans",
-            quantity=50,
-            reorder_level=5,
-            cost_price=Decimal("2.00"),
-        )
-    )
-    db_session.flush()
+    _set_stock(db_session, business, "Rice", 2, reorder_level=5, cost_price=Decimal("10.00"))
+    _set_stock(db_session, business, "Beans", 50, reorder_level=5, cost_price=Decimal("2.00"))
 
     result = get_inventory_status(db_session, business.id)
     assert result["totalInventoryItems"] == 2
@@ -212,16 +204,7 @@ def test_tools_are_scoped_to_business(db_session, tool_name):
         product_name="SecretProduct",
         total_amount=Decimal("999.00"),
     )
-    db_session.add(
-        Inventory(
-            business_id=business_b.id,
-            upload_session_id=upload_b.id,
-            product_name="SecretProduct",
-            quantity=1,
-            reorder_level=5,
-            cost_price=Decimal("999.00"),
-        )
-    )
+    _set_stock(db_session, business_b, "SecretProduct", 1, reorder_level=5, cost_price=Decimal("999.00"))
     db_session.flush()
 
     result = execute_tool(db_session, business_a.id, tool_name, {})

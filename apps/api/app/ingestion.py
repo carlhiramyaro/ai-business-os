@@ -1,12 +1,24 @@
 """The one "validated rows in" boundary every data producer funnels
 through -- the CSV pipeline (app/tasks.py's finalize_upload_task), quick
-manual entry (app/routers/entries.py), and document extraction
+manual entry (app/routers/entries.py), chat/WhatsApp data entry
+(app/data_entry.py's confirm_pending_entry), and document extraction
 (app/routers/documents.py) all translate their own input into canonical
 snake_case-field row dicts and call ingest_rows(). Casting, customer/
-supplier entity resolution, and dedup-hash detection then happen exactly
-once, in exactly one place, regardless of which producer the rows came
-from. See docs/roadmap.md v0.3 ("one canonical 'validated rows in'
-interface with three producers") and docs/decisions.md [2026-07-24].
+supplier/product entity resolution, dedup-hash detection, and stock-ledger
+movements then happen exactly once, in exactly one place, regardless of
+which producer the rows came from. See docs/roadmap.md v0.3 ("one
+canonical 'validated rows in' interface with three producers") and
+docs/decisions.md [2026-07-24].
+
+v0.7 slice 2 (roadmap.md "Inventory depth", docs/decisions.md
+[2026-09-14]) added the stock-ledger side of this: every "sales" row with
+a resolvable product and a quantity emits a negative StockMovement
+(reason="sale"); every "inventory" row emits a "recount" movement -- an
+inventory row/CSV upload states an absolute count as of now, not a delta,
+matching the semantics decisions.md [2026-07-24] already gave manual
+inventory entry. Quantities are assumed to already be in the product's
+base_unit -- none of today's CSV columns or entry schemas carry a unit, so
+there is nothing to convert yet.
 """
 
 import hashlib
@@ -19,7 +31,8 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.entities import canonicalize_product_name, resolve_customer, resolve_supplier
+from app.entities import canonicalize_product_name, resolve_customer, resolve_product, resolve_supplier
+from app.inventory import record_recount, record_stock_movement
 from app.models import Expense, Inventory, Sale
 
 DATASET_MODELS = {"sales": Sale, "inventory": Inventory, "expenses": Expense}
@@ -235,6 +248,11 @@ def ingest_rows(
             duplicate_count += 1
         seen_in_batch.add(content_hash)
         record_kwargs["content_hash"] = content_hash
+        # Assigned explicitly (rather than left to the column's
+        # default=uuid.uuid4) so it's known immediately, before this row's
+        # own db.flush() -- needed below to point a StockMovement's
+        # source_id at the Sale row that caused it.
+        record_kwargs["id"] = uuid.uuid4()
 
         if dataset_type == "sales":
             record_kwargs["raw_row_number"] = start_row_number + offset
@@ -243,10 +261,49 @@ def ingest_rows(
             )
             if customer is not None:
                 record_kwargs["customer_id"] = customer.id
+
+            product = resolve_product(
+                db, business_id, record_kwargs.get("product_name"), category=record_kwargs.get("category")
+            )
+            if product is not None and record_kwargs.get("quantity") is not None:
+                record_stock_movement(
+                    db,
+                    business_id,
+                    product,
+                    record_kwargs["quantity"],
+                    reason="sale",
+                    source_type="sale",
+                    source_id=record_kwargs["id"],
+                )
         elif dataset_type == "inventory":
             supplier = resolve_supplier(db, business_id, record_kwargs.get("supplier"))
             if supplier is not None:
                 record_kwargs["supplier_id"] = supplier.id
+
+            product = resolve_product(
+                db,
+                business_id,
+                record_kwargs.get("product_name"),
+                category=record_kwargs.get("category"),
+                reorder_level=record_kwargs.get("reorder_level"),
+                cost_price=record_kwargs.get("cost_price"),
+                selling_price=record_kwargs.get("selling_price"),
+                supplier_id=record_kwargs.get("supplier_id"),
+            )
+            if product is not None and record_kwargs.get("quantity") is not None:
+                # An inventory row is an absolute count as of now, not a
+                # delta -- see docs/decisions.md [2026-07-24] and
+                # [2026-09-14]. source points at the upload_session (the
+                # one id every producer already has), not this specific
+                # Inventory row, since a whole batch can share one recount.
+                record_recount(
+                    db,
+                    business_id,
+                    product,
+                    record_kwargs["quantity"],
+                    source_type="upload_session",
+                    source_id=upload_session_id,
+                )
 
         record = model_cls(**record_kwargs)
         db.add(record)

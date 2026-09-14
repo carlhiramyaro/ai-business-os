@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.embedding_generation import generate_embeddings_for_report
 from app.forecasting import daily_revenue_points, forecast_revenue, forecast_stock_depletion, sales_velocity_by_product
-from app.models import AgentOutput, AgentRun, Business, Expense, Inventory, Report, ReportSection, Sale
+from app.inventory import list_current_stock
+from app.models import AgentOutput, AgentRun, Business, Expense, Report, ReportSection, Sale
 from app.report_graph import report_graph
 from app.report_metrics import (
     compute_finance_metrics,
@@ -90,21 +91,19 @@ def _populate_report_body(db: Session, business: Business, report: Report) -> No
         )
         .all()
     )
-    # Inventory is a point-in-time snapshot, not a time series -- no date column
-    # to filter on, so every report includes all of the business's current stock.
-    inventory_rows = db.query(Inventory).filter(Inventory.business_id == business.id).all()
+    # Current stock, not a time series -- no date column to filter on, so
+    # every report includes all of the business's current stock. v0.7
+    # slice 3: reads the products/stock_movements ledger (one row per
+    # product, current quantity already summed) instead of every raw
+    # `inventory` row ever inserted -- see docs/decisions.md [2026-09-14].
+    current_stock = list_current_stock(db, business.id)
 
     finance_metrics = compute_finance_metrics(
         sale_totals=[s.total_amount for s in sales],
         expense_amounts=[e.amount for e in expenses],
         expense_categories=[e.category for e in expenses],
     )
-    inventory_metrics = compute_inventory_metrics(
-        [
-            {"productName": i.product_name, "quantity": i.quantity, "reorderLevel": i.reorder_level, "costPrice": i.cost_price}
-            for i in inventory_rows
-        ]
-    )
+    inventory_metrics = compute_inventory_metrics(current_stock)
     marketing_metrics = compute_marketing_metrics(
         [{"productName": s.product_name, "totalAmount": s.total_amount, "paymentMethod": s.payment_method} for s in sales]
     )
@@ -124,7 +123,7 @@ def _populate_report_body(db: Session, business: Business, report: Report) -> No
     forecast_metrics = {
         "revenue": forecast_revenue(revenue_points),
         "stockDepletion": forecast_stock_depletion(
-            [{"productName": i.product_name, "quantity": i.quantity} for i in inventory_rows], velocity
+            [{"productName": item["productName"], "quantity": item["quantity"]} for item in current_stock], velocity
         ),
     }
 

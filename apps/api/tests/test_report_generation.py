@@ -2,6 +2,8 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from app.entities import resolve_product
+from app.inventory import record_recount
 from app.models import Business, Expense, Inventory, ReportSection, Sale, UploadSession, User
 from app.report_generation import generate_report
 
@@ -64,6 +66,12 @@ def _seed_business_with_data(db_session, sale_date=None, expense_date=None, raw_
             cost_price=Decimal("2.00"),
         )
     )
+    # v0.7 slice 3: report_generation.py now reads current stock from the
+    # products/stock_movements ledger, not the raw Inventory row above --
+    # mirror what app.ingestion.ingest_rows does for an inventory row so
+    # report metrics see this product too.
+    rice = resolve_product(db_session, business.id, "Rice", reorder_level=10, cost_price=Decimal("2.00"))
+    record_recount(db_session, business.id, rice, 5)
     db_session.add(
         Expense(
             business_id=business.id,

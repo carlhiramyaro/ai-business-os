@@ -13,7 +13,10 @@ from app.models import (
     Customer,
     DocumentExtraction,
     Expense,
+    Product,
+    ProductUnit,
     Sale,
+    StockMovement,
     Supplier,
     UploadSession,
     User,
@@ -63,6 +66,10 @@ def _patch_storage_and_db(monkeypatch):
     yield
     with TestSessionLocal() as db:
         db.query(DocumentExtraction).delete()
+        # v0.7: FK'd to Business/Supplier, so must clear before those.
+        db.query(StockMovement).delete()
+        db.query(ProductUnit).delete()
+        db.query(Product).delete()
         db.query(Sale).delete()
         db.query(Expense).delete()
         db.query(Customer).delete()

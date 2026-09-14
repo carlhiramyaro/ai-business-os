@@ -24,7 +24,9 @@ from app.routers import (
     entities,
     entries,
     insights,
+    ledger,
     memory,
+    products,
     report,
     upload,
     webhooks,
@@ -169,6 +171,8 @@ app.include_router(entities.router)
 app.include_router(entries.router)
 app.include_router(documents.router)
 app.include_router(insights.router)
+app.include_router(products.router)
+app.include_router(ledger.router)
 app.include_router(memory.router)
 app.include_router(channels.router)
 app.include_router(webhooks.router)

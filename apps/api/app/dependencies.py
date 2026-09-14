@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.clerk_auth import decode_clerk_token
 from app.database import get_db
-from app.models import Business, BusinessFact, Conversation, Insight, Report, UploadSession, User
+from app.models import Business, BusinessFact, Conversation, Insight, Product, Report, UploadSession, User
 from app.worker_health import workers_online
 
 bearer_scheme = HTTPBearer()
@@ -107,6 +107,17 @@ def get_owned_insight(
     if insight is None or insight.business_id != business.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Insight not found")
     return insight
+
+
+def get_owned_product(
+    product_id: uuid.UUID,
+    business: Business = Depends(get_owned_business),
+    db: Session = Depends(get_db),
+) -> Product:
+    product = db.get(Product, product_id)
+    if product is None or product.business_id != business.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return product
 
 
 def get_owned_fact(

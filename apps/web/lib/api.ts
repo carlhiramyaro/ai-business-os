@@ -613,3 +613,121 @@ export async function unlinkChannel(getToken: GetToken, businessId: string, chan
     headers: await authHeaders(getToken),
   });
 }
+
+// v0.7 slice 3 (roadmap.md "Inventory depth") -- current stock, read from
+// the products/stock_movements ledger (app/routers/products.py), plus the
+// plain read-only sales/expenses list views (app/routers/ledger.py). See
+// docs/decisions.md [2026-09-14].
+
+export interface Product {
+  id: string;
+  name: string;
+  sku: string | null;
+  category: string | null;
+  quantity: number;
+  baseUnit: string;
+  reorderLevel: number | null;
+  costPrice: string | null;
+  sellingPrice: string | null;
+  lowStock: boolean;
+}
+
+export async function listProducts(getToken: GetToken, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/`, {
+    headers: await authHeaders(getToken),
+  }).then((response) => parseJsonOrThrow<Product[]>(response));
+}
+
+export interface ProductUpdateInput {
+  sku?: string;
+  category?: string;
+  baseUnit?: string;
+  reorderLevel?: number;
+  costPrice?: string;
+  sellingPrice?: string;
+}
+
+export async function updateProduct(getToken: GetToken, businessId: string, productId: string, update: ProductUpdateInput) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
+    body: JSON.stringify(update),
+  }).then((response) => parseJsonOrThrow<Product>(response));
+}
+
+// "sale" is deliberately not an option here -- a sale's stock movement
+// comes from the sales-entry pipeline, not a direct manual adjustment.
+export type AdjustmentReason = "restock" | "recount" | "loss" | "damage";
+
+export interface StockAdjustmentResponse {
+  id: string;
+  productId: string;
+  quantityDelta: number;
+  reason: string;
+  currentStock: number;
+}
+
+export async function createStockAdjustment(
+  getToken: GetToken,
+  businessId: string,
+  productId: string,
+  adjustment: { reason: AdjustmentReason; quantity: number; unitName?: string; note?: string }
+) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/stock-movements`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
+    body: JSON.stringify(adjustment),
+  }).then((response) => parseJsonOrThrow<StockAdjustmentResponse>(response));
+}
+
+export interface ProductUnit {
+  id: string;
+  unitName: string;
+  conversionToBase: string;
+  createdAt: string;
+}
+
+export async function declareProductUnit(
+  getToken: GetToken,
+  businessId: string,
+  productId: string,
+  unit: { unitName: string; conversionToBase: string | number }
+) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/units`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders(getToken)) },
+    body: JSON.stringify(unit),
+  }).then((response) => parseJsonOrThrow<ProductUnit>(response));
+}
+
+export interface SaleListItem {
+  id: string;
+  saleDate: string | null;
+  productName: string | null;
+  quantity: number | null;
+  unitPrice: string | null;
+  totalAmount: string | null;
+  customerName: string | null;
+  paymentMethod: string | null;
+}
+
+export async function listSales(getToken: GetToken, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/sales`, {
+    headers: await authHeaders(getToken),
+  }).then((response) => parseJsonOrThrow<SaleListItem[]>(response));
+}
+
+export interface ExpenseListItem {
+  id: string;
+  expenseDate: string | null;
+  category: string | null;
+  vendor: string | null;
+  amount: string | null;
+  description: string | null;
+}
+
+export async function listExpenses(getToken: GetToken, businessId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/expenses`, {
+    headers: await authHeaders(getToken),
+  }).then((response) => parseJsonOrThrow<ExpenseListItem[]>(response));
+}

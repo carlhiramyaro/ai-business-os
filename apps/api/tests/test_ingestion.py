@@ -5,7 +5,19 @@ from decimal import Decimal
 import pytest
 
 from app.ingestion import _cast_value, _content_hash, ingest_rows, parse_date_value
-from app.models import Business, Customer, Expense, Inventory, Sale, Supplier, UploadSession, User
+from app.inventory import get_current_stock
+from app.models import (
+    Business,
+    Customer,
+    Expense,
+    Inventory,
+    Product,
+    Sale,
+    StockMovement,
+    Supplier,
+    UploadSession,
+    User,
+)
 
 
 def _seed_session(db_session, source_type="csv"):
@@ -198,6 +210,114 @@ def test_ingest_rows_inventory_resolves_supplier(db_session):
     supplier = db_session.query(Supplier).filter(Supplier.business_id == business.id).one()
     assert supplier.name == "Acme Supplies"
     assert inventory_row.supplier_id == supplier.id
+
+
+def test_ingest_rows_sales_resolves_product_and_records_sale_movement(db_session):
+    business, session = _seed_session(db_session)
+
+    summary = ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": "2026-01-05", "product_name": "Rice", "quantity": "3", "total_amount": "15.0"}],
+    )
+    sale = db_session.query(Sale).filter(Sale.business_id == business.id).one()
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+
+    assert product.name == "Rice"
+    movement = db_session.query(StockMovement).filter(StockMovement.product_id == product.id).one()
+    assert movement.quantity_delta == -3
+    assert movement.reason == "sale"
+    assert movement.source_type == "sale"
+    assert movement.source_id == sale.id
+    assert get_current_stock(db_session, product.id) == -3  # no restock yet -- a sale of unstocked rice goes negative
+    assert summary.inserted == 1
+
+
+def test_ingest_rows_sales_with_no_product_name_records_no_movement(db_session):
+    business, session = _seed_session(db_session)
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": "2026-01-05", "quantity": "3", "total_amount": "15.0"}],
+    )
+
+    assert db_session.query(Product).count() == 0
+    assert db_session.query(StockMovement).count() == 0
+
+
+def test_ingest_rows_inventory_resolves_product_and_records_recount(db_session):
+    business, session = _seed_session(db_session)
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "inventory",
+        [{"product_name": "Rice", "quantity": "100", "cost_price": "2.0", "reorder_level": "10"}],
+    )
+
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    assert product.reorder_level == 10
+    assert product.cost_price == Decimal("2.0")
+    movement = db_session.query(StockMovement).filter(StockMovement.product_id == product.id).one()
+    assert movement.reason == "recount"
+    assert movement.quantity_delta == 100
+    assert movement.source_type == "upload_session"
+    assert movement.source_id == session.id
+    assert get_current_stock(db_session, product.id) == 100
+
+
+def test_ingest_rows_inventory_upload_reconciles_to_absolute_count_not_additive(db_session):
+    """A second inventory upload/entry for the same product states the new
+    reality ("we now have 80"), not a delta on top of the first -- matches
+    CSV/manual-entry semantics from docs/decisions.md [2026-07-24]."""
+    business, session = _seed_session(db_session)
+    ingest_rows(
+        db_session, business.id, session.id, "inventory", [{"product_name": "Rice", "quantity": "100"}]
+    )
+
+    session2 = UploadSession(business_id=business.id, source_type="manual", status="COMPLETED")
+    db_session.add(session2)
+    db_session.flush()
+    ingest_rows(
+        db_session, business.id, session2.id, "inventory", [{"product_name": "rice", "quantity": "80"}]
+    )
+
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    assert get_current_stock(db_session, product.id) == 80
+    assert db_session.query(StockMovement).filter(StockMovement.product_id == product.id).count() == 2
+
+
+def test_ingest_rows_sale_then_inventory_recount_share_one_product(db_session):
+    """The same product resolved from a sale row and later from an
+    inventory row must be one Product, not two -- both go through
+    resolve_product's shared normalized-name dedup key."""
+    business, session = _seed_session(db_session)
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": "2026-01-05", "product_name": "Rice", "quantity": "3", "total_amount": "15.0"}],
+    )
+    ingest_rows(
+        db_session, business.id, session.id, "inventory", [{"product_name": "Rice", "quantity": "50"}]
+    )
+
+    assert db_session.query(Product).filter(Product.business_id == business.id).count() == 1
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    # recount is an absolute assertion, not additive on top of the sale --
+    # stock is exactly 50 after it, regardless of the -3 that preceded it.
+    assert get_current_stock(db_session, product.id) == 50
+    assert [m.reason for m in db_session.query(StockMovement).order_by(StockMovement.created_at).all()] == [
+        "sale",
+        "recount",
+    ]
 
 
 def test_ingest_rows_expenses_date_range(db_session):

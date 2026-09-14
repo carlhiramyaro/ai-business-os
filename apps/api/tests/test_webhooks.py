@@ -31,7 +31,10 @@ from app.models import (
     Message,
     OutboundMessage,
     PendingEntry,
+    Product,
+    ProductUnit,
     Sale,
+    StockMovement,
     UploadSession,
     User,
     WebhookEvent,
@@ -89,6 +92,11 @@ def _patch_env_and_tasks(monkeypatch):
         db.query(PendingEntry).delete()
         db.query(DocumentExtraction).delete()
         db.query(Expense).delete()
+        # v0.7: FK'd to Business, so must clear before it (and Sale, which
+        # StockMovement.source_id can point at without an FK constraint).
+        db.query(StockMovement).delete()
+        db.query(ProductUnit).delete()
+        db.query(Product).delete()
         db.query(Sale).delete()
         db.query(UploadSession).delete()
         db.query(Business).delete()

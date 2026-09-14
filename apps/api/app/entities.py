@@ -10,7 +10,7 @@ import uuid
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Customer, Inventory, Sale, Supplier
+from app.models import Customer, Inventory, Product, Sale, Supplier
 
 
 def _normalized_sql(column):
@@ -76,6 +76,68 @@ def resolve_supplier(db: Session, business_id: uuid.UUID, name) -> Supplier | No
         db.flush()
 
     return supplier
+
+
+def resolve_product(
+    db: Session,
+    business_id: uuid.UUID,
+    name,
+    *,
+    sku=None,
+    category=None,
+    base_unit=None,
+    reorder_level=None,
+    cost_price=None,
+    selling_price=None,
+    supplier_id=None,
+) -> Product | None:
+    """Get-or-create resolution of a product from a raw name -- same shape
+    as resolve_customer/resolve_supplier (v0.7, roadmap.md "Inventory
+    depth"). This is the real entity those write paths adopt in place of
+    canonicalize_product_name's string-only stopgap; that function is
+    unaffected and keeps serving the sales/inventory rows that predate it.
+
+    Every optional field follows the same last-non-empty-value-wins rule
+    resolve_customer's phone does: a later call can fill in or correct
+    sku/category/base_unit/reorder_level/cost_price/selling_price/
+    supplier_id, but a blank/omitted value on this call never erases a
+    value a previous call already set.
+    """
+    normalized = normalize_entity_name(name)
+    if normalized is None:
+        return None
+
+    product = (
+        db.query(Product)
+        .filter(Product.business_id == business_id, Product.normalized_name == normalized)
+        .one_or_none()
+    )
+    if product is None:
+        product = Product(
+            business_id=business_id,
+            name=" ".join(str(name).split()),  # first-seen casing, cleaned spacing
+            normalized_name=normalized,
+            base_unit=str(base_unit).strip() if base_unit is not None and str(base_unit).strip() else "unit",
+        )
+        db.add(product)
+        db.flush()
+
+    if sku is not None and str(sku).strip():
+        product.sku = str(sku).strip()
+    if category is not None and str(category).strip():
+        product.category = str(category).strip()
+    if base_unit is not None and str(base_unit).strip():
+        product.base_unit = str(base_unit).strip()
+    if reorder_level is not None:
+        product.reorder_level = reorder_level
+    if cost_price is not None:
+        product.cost_price = cost_price
+    if selling_price is not None:
+        product.selling_price = selling_price
+    if supplier_id is not None:
+        product.supplier_id = supplier_id
+
+    return product
 
 
 def canonicalize_product_name(db: Session, business_id: uuid.UUID, name, cache: dict | None = None):

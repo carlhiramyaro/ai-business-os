@@ -5,8 +5,22 @@ from decimal import Decimal
 import app.tasks as tasks
 from app.business_facts import remember_fact
 from app.agents import currency_clause, narrate_insight
+from app.entities import resolve_product
 from app.insights_generation import run_business_analysis
-from app.models import Business, BusinessFact, Embedding, Expense, Insight, Inventory, Sale, UploadSession, User
+from app.inventory import record_recount
+from app.models import (
+    Business,
+    BusinessFact,
+    Embedding,
+    Expense,
+    Insight,
+    Inventory,
+    Product,
+    Sale,
+    StockMovement,
+    UploadSession,
+    User,
+)
 from tests.auth_helpers import auth_header, register_and_login
 from tests.conftest import TestSessionLocal
 
@@ -87,6 +101,12 @@ def _seed_business_with_signals(db):
             cost_price=Decimal("2.00"),
         )
     )
+    # v0.7 slice 3: run_business_analysis's stock-depletion signal now
+    # reads the products/stock_movements ledger, not the raw Inventory row
+    # above -- mirror what app.ingestion.ingest_rows does for an inventory
+    # row so the signal still fires.
+    rice = resolve_product(db, business.id, "Rice", reorder_level=50, cost_price=Decimal("2.00"))
+    record_recount(db, business.id, rice, 10)
     db.commit()
     return business
 
@@ -129,6 +149,9 @@ def test_run_business_analysis_creates_expected_insights(monkeypatch):
         assert len(second_run_insights) == first_run_count
     finally:
         db.query(Insight).filter(Insight.business_id == business.id).delete()
+        # v0.7: FK'd to Business, so must clear before it.
+        db.query(StockMovement).filter(StockMovement.business_id == business.id).delete()
+        db.query(Product).filter(Product.business_id == business.id).delete()
         db.query(Sale).filter(Sale.business_id == business.id).delete()
         db.query(Inventory).filter(Inventory.business_id == business.id).delete()
         db.query(Expense).filter(Expense.business_id == business.id).delete()
@@ -172,6 +195,9 @@ def test_run_business_analysis_includes_relevant_business_facts_in_narration(mon
         db.query(Insight).filter(Insight.business_id == business.id).delete()
         db.query(Embedding).filter(Embedding.business_id == business.id).delete()
         db.query(BusinessFact).filter(BusinessFact.business_id == business.id).delete()
+        # v0.7: FK'd to Business, so must clear before it.
+        db.query(StockMovement).filter(StockMovement.business_id == business.id).delete()
+        db.query(Product).filter(Product.business_id == business.id).delete()
         db.query(Sale).filter(Sale.business_id == business.id).delete()
         db.query(Inventory).filter(Inventory.business_id == business.id).delete()
         db.query(Expense).filter(Expense.business_id == business.id).delete()
@@ -341,6 +367,9 @@ def test_run_business_analysis_passes_the_business_currency_to_narration(monkeyp
     finally:
         db.query(Insight).filter(Insight.business_id == business.id).delete()
         db.query(Embedding).filter(Embedding.business_id == business.id).delete()
+        # v0.7: FK'd to Business, so must clear before it.
+        db.query(StockMovement).filter(StockMovement.business_id == business.id).delete()
+        db.query(Product).filter(Product.business_id == business.id).delete()
         db.query(Sale).filter(Sale.business_id == business.id).delete()
         db.query(Inventory).filter(Inventory.business_id == business.id).delete()
         db.query(Expense).filter(Expense.business_id == business.id).delete()

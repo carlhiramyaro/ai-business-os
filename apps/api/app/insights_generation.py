@@ -18,7 +18,8 @@ from app.agents import narrate_insight
 from app.chat_tools import get_inactive_customers
 from app.forecasting import forecast_stock_depletion, sales_velocity_by_product
 from app.insight_delivery import deliver_immediate
-from app.models import Business, Expense, Insight, Inventory, Sale
+from app.inventory import list_current_stock
+from app.models import Business, Expense, Insight, Sale
 from app.retrieval import retrieve_relevant_chunks
 from app.signals import (
     detect_expense_spike,
@@ -95,9 +96,12 @@ def _collect_signals(db: Session, business: Business, today: date) -> list[dict]
         )
     ]
     velocity = sales_velocity_by_product(velocity_sales, velocity_start, today)
+    # v0.7 slice 3: current stock from the products/stock_movements ledger,
+    # not a raw sum of every `inventory` row ever inserted -- same fix as
+    # report_generation.py's, see docs/decisions.md [2026-09-14].
     inventory_items = [
-        {"productName": row.product_name, "quantity": row.quantity}
-        for row in db.query(Inventory).filter(Inventory.business_id == business.id)
+        {"productName": item["productName"], "quantity": item["quantity"]}
+        for item in list_current_stock(db, business.id)
     ]
     stock_forecast = forecast_stock_depletion(inventory_items, velocity, horizon_days=STOCKOUT_HORIZON_DAYS)
     signals.extend(detect_stock_depletion(stock_forecast))
