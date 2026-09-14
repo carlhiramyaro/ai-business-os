@@ -6,11 +6,15 @@ import {
   CANONICAL_FIELDS,
   DocumentStatus,
   GetToken,
+  Product,
+  ProductUnit,
   confirmDocument,
   createExpenseEntry,
   createInventoryEntry,
   createSaleEntry,
   getDocumentStatus,
+  listProductUnits,
+  listProducts,
   updateDocumentRows,
   uploadDocument,
 } from "@/lib/api";
@@ -38,6 +42,28 @@ export default function EntryPage() {
   const { getToken, loading } = useAuth();
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [entryType, setEntryType] = useState<EntryType>("sale");
+  const [products, setProducts] = useState<Product[]>([]);
+  // Fetched once per business here (not per-form) so switching between
+  // Sale/Inventory tabs doesn't re-fetch -- both need the same list, to
+  // catch a typed product name that's a near-miss of an existing one
+  // before it silently creates a duplicate product (see docs/decisions.md
+  // [2026-09-14], "product picker on /entry"). Adjust state during render
+  // rather than an effect -- same pattern NavBar.tsx/inventory/page.tsx use.
+  const [productsLoadedFor, setProductsLoadedFor] = useState<string | null>(null);
+
+  if (businessId && productsLoadedFor !== businessId) {
+    setProductsLoadedFor(businessId);
+    listProducts(getToken, businessId)
+      .then(setProducts)
+      .catch(() => setProducts([]));
+  }
+
+  function refreshProducts() {
+    if (!businessId) return;
+    listProducts(getToken, businessId)
+      .then(setProducts)
+      .catch(() => {});
+  }
 
   if (loading) return null;
 
@@ -72,9 +98,13 @@ export default function EntryPage() {
             ))}
           </div>
 
-          {entryType === "sale" && <SaleForm getToken={getToken} businessId={businessId} />}
+          {entryType === "sale" && (
+            <SaleForm getToken={getToken} businessId={businessId} products={products} onSaved={refreshProducts} />
+          )}
           {entryType === "expense" && <ExpenseForm getToken={getToken} businessId={businessId} />}
-          {entryType === "inventory" && <InventoryForm getToken={getToken} businessId={businessId} />}
+          {entryType === "inventory" && (
+            <InventoryForm getToken={getToken} businessId={businessId} products={products} onSaved={refreshProducts} />
+          )}
           {entryType === "photo" && <PhotoForm getToken={getToken} businessId={businessId} />}
         </>
       )}
@@ -103,9 +133,149 @@ function SuccessBanner({ duplicateWarning, onAddAnother }: { duplicateWarning: b
   );
 }
 
-function SaleForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
+// A typed product name only ever matched existing products by exact
+// string (see app.entities.resolve_product) -- nothing on this page ever
+// showed what already existed, so a near-miss name (a typo, "malt" vs
+// "Malt - 12 pk") silently created a second, disconnected product. This
+// surfaces the existing list as you type so that's visible before
+// submitting, not after. See docs/decisions.md [2026-09-14].
+function ProductPicker({
+  products,
+  value,
+  onChange,
+}: {
+  products: Product[];
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = value.trim().toLowerCase();
+  const matches = (query ? products.filter((p) => p.name.toLowerCase().includes(query)) : products).slice(0, 6);
+
+  return (
+    <div className="relative">
+      <Input
+        placeholder="e.g. Rice"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        // Delayed so a suggestion's onClick still fires before the list
+        // closes -- onMouseDown below also prevents the blur from
+        // stealing focus in the first place, belt and suspenders.
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        autoComplete="off"
+        required
+      />
+      {open && matches.length > 0 && (
+        <ul className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-sm">
+          {matches.map((product) => (
+            <li key={product.id}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange(product.name);
+                  setOpen(false);
+                }}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-background"
+              >
+                <span>{product.name}</span>
+                <span className="shrink-0 text-xs text-muted">
+                  {product.quantity} {product.baseUnit}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Product name + unit, paired: which units are choosable depends on
+// whether `productName` matches an EXISTING product (its own base unit
+// plus whatever it's declared via app/routers/products.py's units
+// endpoint) or looks like a brand-new one (free-text unit, since there's
+// nothing declared yet to pick from -- it becomes that product's base
+// unit at creation). See docs/decisions.md [2026-09-14].
+function ProductAndUnitFields({
+  getToken,
+  businessId,
+  products,
+  productName,
+  onProductNameChange,
+  unitName,
+  onUnitNameChange,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  products: Product[];
+  productName: string;
+  onProductNameChange: (name: string) => void;
+  unitName: string;
+  onUnitNameChange: (unit: string) => void;
+}) {
+  const matchedProduct =
+    products.find((p) => p.name.toLowerCase() === productName.trim().toLowerCase()) ?? null;
+  const [productUnits, setProductUnits] = useState<ProductUnit[]>([]);
+  const [unitsLoadedFor, setUnitsLoadedFor] = useState<string | null>(null);
+
+  const matchedId = matchedProduct?.id ?? null;
+  if (unitsLoadedFor !== matchedId) {
+    setUnitsLoadedFor(matchedId);
+    if (matchedId) {
+      listProductUnits(getToken, businessId, matchedId)
+        .then(setProductUnits)
+        .catch(() => setProductUnits([]));
+    } else {
+      setProductUnits([]);
+    }
+  }
+
+  return (
+    <>
+      <Field label="Product">
+        <ProductPicker products={products} value={productName} onChange={onProductNameChange} />
+      </Field>
+      <Field label={matchedProduct ? "Unit" : "Unit (optional)"}>
+        {matchedProduct ? (
+          <Select value={unitName || matchedProduct.baseUnit} onChange={(e) => onUnitNameChange(e.target.value)}>
+            <option value={matchedProduct.baseUnit}>{matchedProduct.baseUnit}</option>
+            {productUnits.map((u) => (
+              <option key={u.id} value={u.unitName}>
+                {u.unitName}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <Input
+            placeholder="e.g. piece, bag, carton"
+            value={unitName}
+            onChange={(e) => onUnitNameChange(e.target.value)}
+          />
+        )}
+      </Field>
+    </>
+  );
+}
+
+function SaleForm({
+  getToken,
+  businessId,
+  products,
+  onSaved,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  products: Product[];
+  onSaved: () => void;
+}) {
   const [saleDate, setSaleDate] = useState(todayIso());
   const [productName, setProductName] = useState("");
+  const [unitName, setUnitName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unitPrice, setUnitPrice] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -115,6 +285,7 @@ function SaleForm({ getToken, businessId }: { getToken: GetToken; businessId: st
 
   function reset() {
     setProductName("");
+    setUnitName("");
     setQuantity("");
     setUnitPrice("");
     setCustomerName("");
@@ -133,8 +304,10 @@ function SaleForm({ getToken, businessId }: { getToken: GetToken; businessId: st
         quantity: Number(quantity),
         unitPrice: unitPrice || undefined,
         customerName: customerName || undefined,
+        unitName: unitName || undefined,
       });
       setResult({ duplicateWarning: created.duplicateWarning });
+      onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save sale");
     } finally {
@@ -151,15 +324,15 @@ function SaleForm({ getToken, businessId }: { getToken: GetToken; businessId: st
         <Field label="Date">
           <Input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} required />
         </Field>
-        <Field label="Product">
-          <Input
-            placeholder="e.g. Rice"
-            value={productName}
-            onChange={(e) => setProductName(e.target.value)}
-            autoFocus
-            required
-          />
-        </Field>
+        <ProductAndUnitFields
+          getToken={getToken}
+          businessId={businessId}
+          products={products}
+          productName={productName}
+          onProductNameChange={setProductName}
+          unitName={unitName}
+          onUnitNameChange={setUnitName}
+        />
         <div className="grid grid-cols-2 gap-3">
           <Field label="Quantity">
             <Input
@@ -269,8 +442,19 @@ function ExpenseForm({ getToken, businessId }: { getToken: GetToken; businessId:
   );
 }
 
-function InventoryForm({ getToken, businessId }: { getToken: GetToken; businessId: string }) {
+function InventoryForm({
+  getToken,
+  businessId,
+  products,
+  onSaved,
+}: {
+  getToken: GetToken;
+  businessId: string;
+  products: Product[];
+  onSaved: () => void;
+}) {
   const [productName, setProductName] = useState("");
+  const [unitName, setUnitName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [supplier, setSupplier] = useState("");
   const [costPrice, setCostPrice] = useState("");
@@ -280,6 +464,7 @@ function InventoryForm({ getToken, businessId }: { getToken: GetToken; businessI
 
   function reset() {
     setProductName("");
+    setUnitName("");
     setQuantity("");
     setSupplier("");
     setCostPrice("");
@@ -297,8 +482,10 @@ function InventoryForm({ getToken, businessId }: { getToken: GetToken; businessI
         quantity: Number(quantity),
         supplier: supplier || undefined,
         costPrice: costPrice || undefined,
+        unitName: unitName || undefined,
       });
       setResult({ duplicateWarning: created.duplicateWarning });
+      onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save inventory item");
     } finally {
@@ -312,16 +499,16 @@ function InventoryForm({ getToken, businessId }: { getToken: GetToken; businessI
     <Card>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         {error && <p className="text-sm text-danger-fg">{error}</p>}
-        <Field label="Product">
-          <Input
-            placeholder="e.g. Rice"
-            value={productName}
-            onChange={(e) => setProductName(e.target.value)}
-            autoFocus
-            required
-          />
-        </Field>
-        <Field label="Quantity">
+        <ProductAndUnitFields
+          getToken={getToken}
+          businessId={businessId}
+          products={products}
+          productName={productName}
+          onProductNameChange={setProductName}
+          unitName={unitName}
+          onUnitNameChange={setUnitName}
+        />
+        <Field label="Quantity (the actual count, not an addition)">
           <Input
             type="number"
             inputMode="numeric"

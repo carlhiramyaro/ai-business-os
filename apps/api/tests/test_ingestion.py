@@ -12,6 +12,7 @@ from app.models import (
     Expense,
     Inventory,
     Product,
+    ProductUnit,
     Sale,
     StockMovement,
     Supplier,
@@ -318,6 +319,84 @@ def test_ingest_rows_sale_then_inventory_recount_share_one_product(db_session):
         "sale",
         "recount",
     ]
+
+
+def test_ingest_rows_inventory_unit_name_becomes_base_unit_for_a_new_product(db_session):
+    business, session = _seed_session(db_session)
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "inventory",
+        [{"product_name": "Malt", "quantity": "1", "unit_name": "12-pack"}],
+    )
+
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    assert product.base_unit == "12-pack"
+    assert get_current_stock(db_session, product.id) == 1  # 1 base unit (a "12-pack"), no conversion
+
+
+def test_ingest_rows_inventory_unit_name_converts_against_an_existing_products_declared_unit(db_session):
+    business, session = _seed_session(db_session)
+    ingest_rows(
+        db_session, business.id, session.id, "inventory", [{"product_name": "Malt", "quantity": "0", "unit_name": "can"}]
+    )
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    db_session.add(ProductUnit(product_id=product.id, unit_name="12-pack", conversion_to_base=12))
+    db_session.flush()
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "inventory",
+        [{"product_name": "Malt", "quantity": "2", "unit_name": "12-pack"}],
+    )
+
+    assert get_current_stock(db_session, product.id) == 24
+
+
+def test_ingest_rows_sale_unit_name_converts_against_an_existing_products_declared_unit(db_session):
+    business, session = _seed_session(db_session)
+    ingest_rows(
+        db_session, business.id, session.id, "inventory", [{"product_name": "Malt", "quantity": "24", "unit_name": "can"}]
+    )
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    db_session.add(ProductUnit(product_id=product.id, unit_name="12-pack", conversion_to_base=12))
+    db_session.flush()
+
+    ingest_rows(
+        db_session,
+        business.id,
+        session.id,
+        "sales",
+        [{"sale_date": "2026-01-05", "product_name": "Malt", "quantity": "1", "total_amount": "20.0", "unit_name": "12-pack"}],
+    )
+
+    assert get_current_stock(db_session, product.id) == 12  # 24 cans - one 12-pack
+
+
+def test_ingest_rows_unit_name_for_existing_product_never_overwrites_its_base_unit(db_session):
+    """A sale/inventory row against an ALREADY-EXISTING product must never
+    silently change its base_unit via `unit_name` -- only a brand-new
+    product's base_unit is settable this way."""
+    business, session = _seed_session(db_session)
+    ingest_rows(db_session, business.id, session.id, "inventory", [{"product_name": "Malt", "quantity": "1"}])
+    product = db_session.query(Product).filter(Product.business_id == business.id).one()
+    assert product.base_unit == "unit"
+
+    with pytest.raises(ValueError):
+        ingest_rows(
+            db_session,
+            business.id,
+            session.id,
+            "inventory",
+            [{"product_name": "Malt", "quantity": "1", "unit_name": "12-pack"}],
+        )
+
+    db_session.refresh(product)
+    assert product.base_unit == "unit"  # unchanged despite the undeclared unit_name
 
 
 def test_ingest_rows_expenses_date_range(db_session):

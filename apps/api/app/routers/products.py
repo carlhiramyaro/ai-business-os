@@ -144,6 +144,16 @@ def create_stock_adjustment(
     )
 
 
+@router.get("/{product_id}/units", response_model=list[ProductUnitItem])
+def list_product_units(product: Product = Depends(get_owned_product), db: Session = Depends(get_db)):
+    return (
+        db.query(ProductUnit)
+        .filter(ProductUnit.product_id == product.id)
+        .order_by(ProductUnit.unit_name)
+        .all()
+    )
+
+
 @router.post("/{product_id}/units", response_model=ProductUnitItem, status_code=status.HTTP_201_CREATED)
 def declare_product_unit(
     payload: ProductUnitRequest,

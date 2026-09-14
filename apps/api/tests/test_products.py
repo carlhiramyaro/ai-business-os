@@ -129,6 +129,26 @@ def test_declare_product_unit_then_adjust_using_it(client, db_session):
     assert adjust_response.json()["currentStock"] == 48
 
 
+def test_list_product_units_returns_declared_units(client, db_session):
+    token = register_and_login("products14@example.com")
+    business_id = _create_business(client, token)
+    product = resolve_product(db_session, uuid.UUID(business_id), "Rice", base_unit="piece")
+    db_session.commit()
+
+    assert client.get(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/units", headers=auth_header(token)
+    ).json() == []
+
+    client.post(
+        f"/api/v1/businesses/{business_id}/products/{product.id}/units",
+        json={"unitName": "carton", "conversionToBase": 24},
+        headers=auth_header(token),
+    )
+    response = client.get(f"/api/v1/businesses/{business_id}/products/{product.id}/units", headers=auth_header(token))
+    assert response.status_code == 200
+    assert [u["unitName"] for u in response.json()] == ["carton"]
+
+
 def test_declare_product_unit_twice_updates_conversion_rather_than_duplicating(client, db_session):
     token = register_and_login("products8@example.com")
     business_id = _create_business(client, token)

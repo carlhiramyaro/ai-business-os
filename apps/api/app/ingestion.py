@@ -16,9 +16,19 @@ a resolvable product and a quantity emits a negative StockMovement
 (reason="sale"); every "inventory" row emits a "recount" movement -- an
 inventory row/CSV upload states an absolute count as of now, not a delta,
 matching the semantics decisions.md [2026-07-24] already gave manual
-inventory entry. Quantities are assumed to already be in the product's
-base_unit -- none of today's CSV columns or entry schemas carry a unit, so
-there is nothing to convert yet.
+inventory entry.
+
+An optional `unit_name` key (not an ORM column -- popped out before a row
+is cast into Sale/Inventory) lets a row state its quantity in a unit
+other than the product's base_unit. Only app/routers/entries.py's manual
+SaleEntry/InventoryEntry currently ever set it (docs/decisions.md
+[2026-09-14], "unit selector on /entry") -- CSV rows and WhatsApp/chat's
+propose_*_entry tools never include the key, so they're unaffected and
+keep assuming base_unit, same as before. Whether a given `unit_name`
+becomes the product's base_unit (a brand-new product -- nothing to
+convert against yet) or must match an already-declared product_units
+entry (an existing product) depends on whether the product existed
+BEFORE this row -- see `_product_already_exists`.
 """
 
 import hashlib
@@ -31,9 +41,9 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.entities import canonicalize_product_name, resolve_customer, resolve_product, resolve_supplier
+from app.entities import canonicalize_product_name, normalize_entity_name, resolve_customer, resolve_product, resolve_supplier
 from app.inventory import record_recount, record_stock_movement
-from app.models import Expense, Inventory, Sale
+from app.models import Expense, Inventory, Product, Sale
 
 DATASET_MODELS = {"sales": Sale, "inventory": Inventory, "expenses": Expense}
 
@@ -179,6 +189,21 @@ def _cast_value(field_name: str, value):
     return str(value)
 
 
+def _product_already_exists(db: Session, business_id: uuid.UUID, name) -> bool:
+    """Whether a product matching `name` was already resolvable BEFORE
+    this row -- decides how a row's `unit_name` gets used (see this
+    module's docstring). Must run before resolve_product creates one."""
+    normalized = normalize_entity_name(name)
+    if normalized is None:
+        return False
+    return (
+        db.query(Product.id)
+        .filter(Product.business_id == business_id, Product.normalized_name == normalized)
+        .first()
+        is not None
+    )
+
+
 def _content_hash(business_id, dataset_type: str, record_kwargs: dict) -> str:
     parts = [str(business_id), dataset_type]
     for field in DEDUP_FIELDS[dataset_type]:
@@ -253,6 +278,10 @@ def ingest_rows(
         # own db.flush() -- needed below to point a StockMovement's
         # source_id at the Sale row that caused it.
         record_kwargs["id"] = uuid.uuid4()
+        # Not an ORM column on Sale/Inventory -- popped here so it never
+        # reaches model_cls(**record_kwargs) below. See this module's
+        # docstring for how it's used.
+        unit_name = record_kwargs.pop("unit_name", None)
 
         if dataset_type == "sales":
             record_kwargs["raw_row_number"] = start_row_number + offset
@@ -262,8 +291,13 @@ def ingest_rows(
             if customer is not None:
                 record_kwargs["customer_id"] = customer.id
 
+            product_existed = _product_already_exists(db, business_id, record_kwargs.get("product_name"))
             product = resolve_product(
-                db, business_id, record_kwargs.get("product_name"), category=record_kwargs.get("category")
+                db,
+                business_id,
+                record_kwargs.get("product_name"),
+                category=record_kwargs.get("category"),
+                base_unit=unit_name if not product_existed else None,
             )
             if product is not None and record_kwargs.get("quantity") is not None:
                 record_stock_movement(
@@ -272,6 +306,7 @@ def ingest_rows(
                     product,
                     record_kwargs["quantity"],
                     reason="sale",
+                    unit_name=unit_name if product_existed else None,
                     source_type="sale",
                     source_id=record_kwargs["id"],
                 )
@@ -280,6 +315,7 @@ def ingest_rows(
             if supplier is not None:
                 record_kwargs["supplier_id"] = supplier.id
 
+            product_existed = _product_already_exists(db, business_id, record_kwargs.get("product_name"))
             product = resolve_product(
                 db,
                 business_id,
@@ -289,6 +325,7 @@ def ingest_rows(
                 cost_price=record_kwargs.get("cost_price"),
                 selling_price=record_kwargs.get("selling_price"),
                 supplier_id=record_kwargs.get("supplier_id"),
+                base_unit=unit_name if not product_existed else None,
             )
             if product is not None and record_kwargs.get("quantity") is not None:
                 # An inventory row is an absolute count as of now, not a
@@ -301,6 +338,7 @@ def ingest_rows(
                     business_id,
                     product,
                     record_kwargs["quantity"],
+                    unit_name=unit_name if product_existed else None,
                     source_type="upload_session",
                     source_id=upload_session_id,
                 )

@@ -113,6 +113,47 @@ def test_create_sale_entry_duplicate_warning(client, db_session):
     assert second.status_code == 201  # inserted anyway, warn-only
 
 
+def test_create_inventory_entry_unit_name_becomes_base_unit_for_new_product(client, db_session):
+    token = register_and_login("entries7@example.com")
+    business_id = _create_business(client, token)
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/entries/inventory",
+        json={"productName": "Malt", "quantity": 1, "unitName": "12-pack"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    from app.models import Product
+
+    product = db_session.query(Product).filter(Product.business_id == business_id, Product.name == "Malt").one()
+    assert product.base_unit == "12-pack"
+
+
+def test_create_sale_entry_unit_name_unknown_for_existing_product_returns_400(client, db_session):
+    token = register_and_login("entries8@example.com")
+    business_id = _create_business(client, token)
+
+    # First entry creates "Malt" with base_unit defaulting to "unit".
+    client.post(
+        f"/api/v1/businesses/{business_id}/entries/inventory",
+        json={"productName": "Malt", "quantity": 24},
+        headers=auth_header(token),
+    )
+
+    response = client.post(
+        f"/api/v1/businesses/{business_id}/entries/sales",
+        json={
+            "saleDate": "2026-03-01",
+            "productName": "Malt",
+            "quantity": 1,
+            "unitName": "12-pack",  # never declared for this product
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400
+
+
 def test_entries_forbidden_for_non_owner(client, db_session):
     token = register_and_login("entries6@example.com")
     business_id = _create_business(client, token)

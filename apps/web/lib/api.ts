@@ -356,6 +356,9 @@ export interface SaleEntryInput {
   customerName?: string;
   customerPhone?: string;
   paymentMethod?: string;
+  // Unit `quantity` is stated in -- e.g. "12-pack" against a product
+  // tracked in "can". Omit to mean "already in the product's base unit".
+  unitName?: string;
 }
 
 export async function createSaleEntry(getToken: GetToken, businessId: string, entry: SaleEntryInput) {
@@ -390,6 +393,9 @@ export interface InventoryEntryInput {
   supplier?: string;
   costPrice?: string;
   sellingPrice?: string;
+  // Same meaning as SaleEntryInput.unitName. For a brand-new product this
+  // BECOMES its base unit (nothing to convert against yet).
+  unitName?: string;
 }
 
 export async function createInventoryEntry(getToken: GetToken, businessId: string, entry: InventoryEntryInput) {
@@ -693,6 +699,12 @@ export interface ProductUnit {
   unitName: string;
   conversionToBase: string;
   createdAt: string;
+}
+
+export async function listProductUnits(getToken: GetToken, businessId: string, productId: string) {
+  return fetch(`${API_URL}/api/v1/businesses/${businessId}/products/${productId}/units`, {
+    headers: await authHeaders(getToken),
+  }).then((response) => parseJsonOrThrow<ProductUnit[]>(response));
 }
 
 export async function declareProductUnit(
