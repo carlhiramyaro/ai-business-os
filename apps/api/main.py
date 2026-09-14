@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.clerk_auth import warm_clerk_jwks
 from app.database import get_db
 from app.logging_config import configure_logging
 from app.observability import flush_observability, init_observability
@@ -44,6 +45,12 @@ logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Warm PyJWKClient's cache before serving traffic -- without this, the
+    # first real request after every deploy (a fresh process, empty cache)
+    # pays for the JWKS fetch inline, and if that fetch is at all slow a
+    # concurrent second request can lose the race and get a spurious 401.
+    # Seen once during the Clerk production cutover (docs/decisions.md).
+    warm_clerk_jwks()
     yield
     # Langfuse batches spans on a background thread -- flush on graceful
     # shutdown (e.g. a deploy's container swap) so in-flight traces aren't

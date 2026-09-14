@@ -14,6 +14,20 @@ CLERK_ISSUER = os.getenv("CLERK_ISSUER")
 _jwk_client = jwt.PyJWKClient(CLERK_JWKS_URL) if CLERK_JWKS_URL else None
 
 
+def warm_clerk_jwks() -> None:
+    """Fetches and caches Clerk's key set immediately, so a fresh process
+    doesn't pay for that fetch on whatever request happens to arrive
+    first. Best-effort -- a warmup failure (e.g. transient network issue
+    at startup) shouldn't block the app from serving; get_signing_key_from_jwt
+    will just fetch again, inline, on first real use."""
+    if _jwk_client is None:
+        return
+    try:
+        _jwk_client.get_jwk_set()
+    except Exception:
+        pass
+
+
 def decode_clerk_token(token: str) -> dict:
     """Verifies a Clerk session token's RS256 signature against Clerk's
     published JWKS, plus issuer and expiry. Raises jwt.PyJWTError (or a
