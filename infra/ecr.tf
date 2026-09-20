@@ -8,6 +8,7 @@
 resource "aws_ecr_repository" "api" {
   name                 = "ai-business-os/api"
   image_tag_mutability = "IMMUTABLE" # a given git-SHA tag can never be silently overwritten
+  force_delete         = true        # 2026-09-20: full teardown -- images rebuild from CI, nothing lost
 
   image_scanning_configuration {
     scan_on_push = true
@@ -17,6 +18,7 @@ resource "aws_ecr_repository" "api" {
 resource "aws_ecr_repository" "web" {
   name                 = "ai-business-os/web"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true # 2026-09-20: full teardown -- images rebuild from CI, nothing lost
 
   image_scanning_configuration {
     scan_on_push = true

@@ -37,10 +37,17 @@ resource "aws_db_instance" "main" {
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:30-mon:05:30"
 
-  # Deliberately on: `terraform destroy` will refuse to remove this
-  # instance until it's flipped off, forcing a conscious decision before
-  # customer data is deleted. See docs/infra-guide.md.
-  deletion_protection       = true
+  # Deliberately on normally: `terraform destroy` will refuse to remove
+  # this instance until it's flipped off, forcing a conscious decision
+  # before customer data is deleted. See docs/infra-guide.md.
+  #
+  # Flipped off 2026-09-18/20 for a full, deliberate cost-driven teardown of
+  # the whole stack (not just this instance) -- see docs/decisions.md. The
+  # automatic final snapshot this produced (final_snapshot_identifier below)
+  # was itself deleted on 2026-09-20 at the owner's explicit request, so
+  # there is no remaining copy of this data. Flip back to `true` the next
+  # time this environment is rebuilt with real data in it.
+  deletion_protection       = false
   skip_final_snapshot       = false
   final_snapshot_identifier = "ai-business-os-${var.environment}-final"
 
